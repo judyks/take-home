@@ -1,26 +1,180 @@
 # Video Generation API
 
-This API generates videos from text prompts using the `Lightricks/LTX-Video-0.9.7-distilled` model. It's built with FastAPI and runs in a Docker container, optimized for NVIDI├── src
-│   └── main.py
-└── tests
-    ├── quick_test.py
-    └── test_video_generation.py## Project Structure
+A containerized FastAPI service that generates videos from text prompts using the Lightricks/LTX-Video-0.9.7-distilled model. Optimized for NVIDIA GPU deployment with comprehensive testing and monitoring.
+
+## Features
+
+- 🎬 **Text-to-Video Generation**: Create videos from natural language descriptions
+- 🚀 **GPU Accelerated**: Optimized for NVIDIA GPUs with CUDA support
+- 📦 **Containerized Deployment**: Docker and Docker Compose ready
+- 🔍 **Interactive Documentation**: Built-in Swagger UI at `/docs`
+- 🖼️ **Web Gallery**: Browse and preview generated videos
+- 🧪 **Comprehensive Testing**: Automated test suites included
+- ⚡ **Health Monitoring**: Built-in health checks and GPU monitoring
+
+## Quick Start
+
+### One-Command Deployment
+
+```bash
+./deploy.sh
+```
+
+This script will build the Docker image, start the service, and run basic tests.
+
+### Manual Deployment
+
+```bash
+# Build and start the service
+docker-compose up --build -d
+
+# Verify the API is running
+curl http://localhost:8000/health
+
+# Generate your first video
+curl -X POST "http://localhost:8000/generate?prompt=A%20cat%20walking&duration=3"
+```
+
+## Project Structure
+
 ```
 .
-├── Dockerfile                    # Container definition
-├── README.md                     # This documentation
-├── demo.py                       # End-to-end demo script
-├── deploy.sh                     # One-command deployment
-├── docker-compose.yml            # Service orchestration
-├── requirements.txt              # Python dependencies
-├── .env.example                  # Environment configuration template
+├── API_DOCUMENTATION.md      # Detailed API reference
+├── README.md                 # This file
+├── Dockerfile               # Container definition
+├── docker-compose.yml       # Service orchestration
+├── deploy.sh                # One-command deployment
+├── demo.py                  # End-to-end demo script
+├── requirements.txt         # Python dependencies
 ├── configs/
-│   └── settings.py              # Application configuration
+│   └── settings.py         # Application configuration
 ├── src/
-│   └── main.py                  # Main API application
-└── tests/
-    ├── quick_test.py            # Basic functionality tests
-    └── test_video_generation.py # Comprehensive tests
+│   └── main.py            # FastAPI application
+├── tests/
+│   ├── quick_test.py      # Basic functionality tests
+│   └── test_video_generation.py  # Comprehensive tests
+└── outputs/               # Generated videos and metadata
+    ├── videos/
+    └── metadata/
+```
+
+## Usage Examples
+
+### Generate a Video
+
+```bash
+curl -X POST "http://localhost:8000/generate" 
+  -d "prompt=A beautiful sunset over the ocean" 
+  -d "duration=5"
+```
+
+### Check Generation Status
+
+```bash
+curl "http://localhost:8000/status/{job_id}"
+```
+
+### Download Video
+
+```bash
+curl -o video.mp4 "http://localhost:8000/download/{job_id}"
+```
+
+## Testing
+
+### Run All Tests
+
+```bash
+# Quick functionality test
+python tests/quick_test.py
+
+# Comprehensive test suite
+python tests/test_video_generation.py
+
+# End-to-end demo
+python demo.py
+```
+
+## Configuration
+
+### Environment Variables
+
+Key configuration options (see `configs/settings.py` for full list):
+
+```bash
+# Model Settings
+MODEL_NAME=Lightricks/LTX-Video-0.9.7-distilled
+MODEL_DEVICE=auto  # auto, cuda, cpu
+MAX_VIDEO_DURATION=10
+
+# API Settings
+API_HOST=0.0.0.0
+API_PORT=8000
+LOG_LEVEL=INFO
+
+# Storage Settings
+OUTPUT_DIR=./outputs
+CLEANUP_AFTER_DAYS=7
+```
+
+### Docker Environment
+
+Create a `.env` file for Docker Compose:
+
+```bash
+CUDA_VISIBLE_DEVICES=0
+MODEL_NAME=Lightricks/LTX-Video-0.9.7-distilled
+MAX_VIDEO_DURATION=10
+LOG_LEVEL=INFO
+```
+
+## Management Commands
+
+```bash
+# Service Management
+docker-compose ps                    # Check status
+docker-compose logs -f video-api     # View logs
+docker-compose down                  # Stop service
+docker-compose restart               # Restart service
+
+# Development
+docker-compose exec video-api bash   # Shell access
+docker-compose build --no-cache      # Rebuild image
+```
+
+## System Requirements
+
+- **GPU**: NVIDIA GPU with CUDA support (recommended)
+- **Memory**: 16GB+ RAM, 8GB+ GPU memory
+- **Storage**: 50GB+ available disk space
+- **Software**: Docker and Docker Compose
+
+## Troubleshooting
+
+### Common Issues
+
+- **API Not Starting**: Check `docker-compose ps` and `docker-compose logs video-api`
+- **CUDA Errors**: Ensure NVIDIA Docker runtime installed, try `docker-compose build --no-cache`
+- **Out of Memory**: Reduce video duration or restart container
+- **Model Loading Fails**: Check internet connection for HuggingFace downloads
+
+### Health Checks
+
+```bash
+curl http://localhost:8000/health     # API health
+curl http://localhost:8000/model-status  # Model status
+nvidia-smi                           # GPU status
+```
+
+## Documentation
+
+- **API Reference**: [API_DOCUMENTATION.md](./API_DOCUMENTATION.md)
+- **Interactive Docs**: http://localhost:8000/docs (when running)
+- **Video Gallery**: http://localhost:8000/gallery (when running)
+
+## License
+
+This project is provided as-is for evaluation purposes.
 ```leshooting
 
 ### Common Issues
