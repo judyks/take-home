@@ -9,7 +9,7 @@ import time
 import random
 
 def test_api():
-    api_url = "http://127.0.0.1:8003"
+    api_url = "http://localhost:8000"  # Use the known working port
     
     # Random prompts to choose from
     prompts = [
@@ -50,7 +50,7 @@ def test_api():
             f"{api_url}/generate",
             params={
                 "prompt": selected_prompt,
-                "duration": 3,
+                "duration": 6,  # 6 seconds instead of 3
                 "seed": random.randint(1, 100000)
             },
             timeout=600  # 10 minute timeout

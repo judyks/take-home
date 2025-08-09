@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Video Generation API Demo Script
-Demonstrates end-to-end usage of the video generation API
 """
 
 import requests
@@ -81,7 +80,6 @@ class VideoGenerationDemo:
         print(f"   Duration: {duration} seconds")
         
         try:
-            # Start generation
             print("   Starting generation...")
             response = self.session.post(
                 f"{self.base_url}/generate",
@@ -247,7 +245,7 @@ class VideoGenerationDemo:
             print(f"   API info failed: {e}")
             return False
     
-    def run_demo(self, prompt: str = "A cat walking in a garden", duration: int = 3):
+    def run_demo(self, prompt: str = "A cat walking in a garden", duration: int = 6):
         print("Video Generation API Demo")
         print("=" * 50)
         
@@ -306,7 +304,7 @@ def main():
     # get configuration
     base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
     prompt = os.getenv("DEMO_PROMPT", "A cat walking in a garden")
-    duration = int(os.getenv("DEMO_DURATION", "3"))
+    duration = int(os.getenv("DEMO_DURATION", "6"))
     
     # allow command line overrides
     if len(sys.argv) > 1:
