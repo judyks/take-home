@@ -1,71 +1,82 @@
 # main.py - video generation API server
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
-import logging
+
 import os
 import uuid
 import json
+import logging
+from datetime import datetime
+from typing import List, Optional, Dict, Any
+
 import imageio
 import uvicorn
-from datetime import datetime
-from typing import List
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse
 from PIL import Image
 import numpy as np
+
+
+# Constants
+MAX_DURATION = 10
+MIN_DURATION = 1
+MAX_RESOLUTION = 768
+MIN_FPS = 4
+MAX_FPS = 24
+MAX_BATCH_SIZE = 5
+
+# MockTorch for fallback if PyTorch is unavailable
+class MockTorch:
+    class cuda:
+        @staticmethod
+        def is_available():
+            return False
+        @staticmethod
+        def device_count():
+            return 0
+        @staticmethod
+        def current_device():
+            return 0
+        @staticmethod
+        def get_device_name():
+            return "No GPU (PyTorch unavailable)"
+        @staticmethod
+        def memory_allocated():
+            return 0
+        @staticmethod
+        def memory_reserved():
+            return 0
+
+    class version:
+        cuda = "unavailable"
+
+    @staticmethod
+    def bfloat16():
+        return "bfloat16"
+
+    class Generator:
+        def __init__(self, device="cpu"):
+            self.device = device
+        def manual_seed(self, seed):
+            return self
+
+    __version__ = "mock"
 
 # try to import PyTorch -> fallback if CUDA issues
 try:
     import torch
     TORCH_AVAILABLE = True
-    print(f"PyTorch {torch.__version__} loaded successfully")
+    logging.info(f"PyTorch {torch.__version__} loaded successfully")
     if torch.cuda.is_available():
-        print(f"CUDA {torch.version.cuda} is available")
-        print(f"GPU: {torch.cuda.get_device_name()}")
+        logging.info(f"CUDA {torch.version.cuda} is available")
+        logging.info(f"GPU: {torch.cuda.get_device_name()}")
     else:
-        print("CUDA not available, running on CPU")
+        logging.info("CUDA not available, running on CPU")
 except Exception as e:
-    print(f"Failed to import PyTorch: {e}")
+    logging.warning(f"Failed to import PyTorch: {e}")
     TORCH_AVAILABLE = False
-    
-    # create mock torch module
-    class MockTorch:
-        class cuda:
-            @staticmethod
-            def is_available():
-                return False
-            @staticmethod
-            def device_count():
-                return 0
-            @staticmethod
-            def current_device():
-                return 0
-            @staticmethod
-            def get_device_name():
-                return "No GPU (PyTorch unavailable)"
-            @staticmethod
-            def memory_allocated():
-                return 0
-            @staticmethod
-            def memory_reserved():
-                return 0
-        
-        class version:
-            cuda = "unavailable"
-        
-        @staticmethod
-        def bfloat16():
-            return "bfloat16"
-        
-        class Generator:
-            def __init__(self, device="cpu"):
-                self.device = device
-            def manual_seed(self, seed):
-                return self
-        
-        __version__ = "mock"
-    
     torch = MockTorch()
-    print("Using MockTorch for graceful fallback")
+    logging.info("Using MockTorch for graceful fallback")
+
 
 # configure logging so we can see what's happening
 logging.basicConfig(level=logging.INFO)
@@ -75,9 +86,84 @@ logger = logging.getLogger(__name__)
 pipeline = None
 
 
+# Advanced Parameter Optimization Functions
+
+def optimize_generation_parameters(
+    prompt: str,
+    duration: int,
+    guidance_scale: Optional[float] = None,
+    num_inference_steps: Optional[int] = None,
+    negative_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Optimize generation parameters for better prompt adherence
+    """
+    # Use conservative defaults that work well for video generation
+    if guidance_scale is None:
+        guidance_scale = 7.5  # Balanced setting for good prompt following without artifacts
+    
+    if num_inference_steps is None:
+        num_inference_steps = 25  # Good quality/speed balance
+    
+    # Simple, effective negative prompt
+    if negative_prompt is None:
+        negative_prompt = "blurry, low quality, distorted, watermark, text, static image"
+    
+    return {
+        'guidance_scale': guidance_scale,
+        'num_inference_steps': num_inference_steps,
+        'negative_prompt': negative_prompt
+    }
+
+def enhance_prompt(prompt: str) -> str:
+    """
+    Enhance prompt for better video generation without over-complicating
+    """
+    prompt = prompt.strip()
+    
+    # Don't enhance if already long or contains video-specific terms
+    if len(prompt.split()) > 15 or any(word in prompt.lower() for word in ['video', 'moving', 'motion', 'animation']):
+        return prompt
+    
+    # Add minimal enhancement for video generation
+    return f"{prompt}, smooth motion"
+
+def get_style_preset(style: str) -> Dict[str, Any]:
+    """
+    Get simplified style presets focused on core differences
+    """
+    presets = {
+        "cinematic": {
+            "guidance_scale": 8.0,
+            "num_inference_steps": 30,
+            "prompt_suffix": ", cinematic style",
+            "negative_prompt": "blurry, low quality, amateur, shaky"
+        },
+        "realistic": {
+            "guidance_scale": 7.5,
+            "num_inference_steps": 28,
+            "prompt_suffix": ", photorealistic",
+            "negative_prompt": "cartoon, anime, artistic, low quality, blurry"
+        },
+        "artistic": {
+            "guidance_scale": 8.5,
+            "num_inference_steps": 32,
+            "prompt_suffix": ", artistic style",
+            "negative_prompt": "photographic, realistic, low quality, blurry"
+        }
+    }
+    
+    return presets.get(style, {
+        "guidance_scale": 7.5,
+        "num_inference_steps": 25,
+        "prompt_suffix": "",
+        "negative_prompt": "blurry, low quality, distorted, watermark, text, static image"
+    })
+
+
 # Video Saving & File Management Functions
 
-def ensure_output_directories():
+def ensure_output_directories() -> None:
     """Create necessary output directories if they don't exist"""
     base_dir = os.getcwd()
     if not base_dir.endswith("take-home"):
@@ -99,7 +185,13 @@ def get_output_path(subdir: str) -> str:
         base_dir = os.path.dirname(base_dir)
     return os.path.join(base_dir, "outputs", subdir)
 
-def save_video_frames(frames: List, prompt: str, duration: int, resolution: str) -> dict:
+def save_video_frames(
+    frames: List,
+    prompt: str,
+    duration: int,
+    resolution: str,
+    fps: int = 8
+) -> Dict[str, Any]:
     """
     Save generated frames as an MP4 video file
     
@@ -139,20 +231,20 @@ def save_video_frames(frames: List, prompt: str, duration: int, resolution: str)
                 logger.warning(f"Unknown frame type: {type(frame)}")
                 processed_frames.append(np.array(frame))
         
-        # calculate FPS (frames per second)
-        fps = len(processed_frames) / duration if duration > 0 else 8
+        # calculate FPS (frames per second) - use provided fps instead of calculating
+        actual_fps = fps
         
         # save as MP4 video
-        logger.info(f"Saving video with {len(processed_frames)} frames at {fps:.1f} FPS")
+        logger.info(f"Saving video with {len(processed_frames)} frames at {actual_fps} FPS")
         
         # imageio to save MP4
         writer = imageio.get_writer(
             video_path, 
-            fps=fps, 
-            quality=7,  
+            fps=actual_fps, 
+            quality=8,  # Increased quality
             codec='libx264',  # standard for compatibility
             format='FFMPEG',  # for MP4
-            output_params=['-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2']
+            output_params=['-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-crf', '18']  # Higher quality encoding
         )
         
         for frame in processed_frames:
@@ -169,7 +261,7 @@ def save_video_frames(frames: List, prompt: str, duration: int, resolution: str)
             "filename": filename,
             "video_path": video_path,
             "file_size_mb": round(file_size_mb, 2),
-            "fps": round(fps, 1),
+            "fps": actual_fps,
             "total_frames": len(processed_frames)
         }
         
@@ -177,7 +269,7 @@ def save_video_frames(frames: List, prompt: str, duration: int, resolution: str)
         logger.error(f"Failed to save video: {str(e)}")
         raise Exception(f"Video saving failed: {str(e)}")
 
-def save_generation_metadata(job_id: str, metadata: dict):
+def save_generation_metadata(job_id: str, metadata: dict) -> None:
     """Save metadata about the video generation"""
     try:
         metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
@@ -187,7 +279,7 @@ def save_generation_metadata(job_id: str, metadata: dict):
     except Exception as e:
         logger.error(f"Failed to save metadata: {str(e)}")
 
-def find_video_file(job_id: str) -> str:
+def find_video_file(job_id: str) -> Optional[str]:
     """Find video file by job_id"""
     videos_dir = get_output_path("videos")
     if not os.path.exists(videos_dir):
@@ -205,9 +297,6 @@ app = FastAPI(
     description="Converts text prompts into videos using Lightricks LTX-Video-0.9.7-distilled model",
     version="1.0.0"
 )
-
-
-
 
 
 # Basic Endpoints (Routes)
@@ -268,7 +357,7 @@ async def root():
         }
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> Dict[str, Any]:
     """
     Health check endpoint - tells us if everything is working
     (what Docker calls to check if our service is healthy)
@@ -294,7 +383,7 @@ async def health_check():
     }
 
 @app.get("/test-model-loading")
-async def test_model_loading():
+async def test_model_loading() -> Dict[str, Any]:
     """
     Test endpoint to load the LTX-Video-0.9.7-distilled model
     This loads the specific distilled model from Lightricks
@@ -417,7 +506,7 @@ async def test_model_loading():
         }
 
 @app.get("/model-status")
-async def model_status():
+async def model_status() -> Dict[str, Any]:
     """
     Check if the LTX-Video-0.9.7-distilled model is loaded and ready
     """
@@ -439,7 +528,7 @@ async def model_status():
         }
 
 @app.get("/debug-diffusers")
-async def debug_diffusers():
+async def debug_diffusers() -> Dict[str, Any]:
     """
     Debug endpoint to see what's available in the diffusers library
     """
@@ -461,17 +550,97 @@ async def debug_diffusers():
             "message": f"Failed to inspect diffusers: {str(e)}"
         }
 
+@app.post("/analyze-prompt")
+async def analyze_prompt(prompt: str) -> Dict[str, Any]:
+    """
+    Analyze a prompt and provide simple optimization suggestions
+    """
+    try:
+        if not prompt or len(prompt.strip()) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Prompt cannot be empty"
+            )
+        
+        prompt = prompt.strip()
+        word_count = len(prompt.split())
+        
+        # Simple suggestions for better video generation
+        suggestions = []
+        if word_count < 3:
+            suggestions.append("Add more descriptive details for better results")
+        if word_count > 20:
+            suggestions.append("Consider shortening the prompt - very long prompts can confuse the model")
+        if not any(word in prompt.lower() for word in ['moving', 'motion', 'video', 'walking', 'flying', 'flowing']):
+            suggestions.append("Consider adding motion words like 'moving', 'flowing', or 'walking'")
+        
+        return {
+            "original_prompt": prompt,
+            "word_count": word_count,
+            "complexity": "simple" if word_count < 5 else "complex" if word_count > 15 else "moderate",
+            "suggestions": suggestions,
+            "recommended_settings": {
+                "guidance_scale": 7.5,
+                "num_inference_steps": 25,
+                "fps": 8
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to analyze prompt: {str(e)}"
+        )
+
+@app.get("/styles")
+async def get_available_styles() -> Dict[str, Any]:
+    """
+    Get list of available simplified style presets
+    """
+    styles = {
+        "cinematic": {
+            "name": "Cinematic",
+            "description": "Film-like quality with dramatic composition",
+            "best_for": "Professional-looking content, storytelling"
+        },
+        "realistic": {
+            "name": "Realistic",
+            "description": "Natural, photorealistic appearance",
+            "best_for": "Documentary-style content, real-world scenes"
+        },
+        "artistic": {
+            "name": "Artistic",
+            "description": "Creative and stylized appearance",
+            "best_for": "Creative content, artistic expression"
+        }
+    }
+    
+    return {
+        "available_styles": styles,
+        "usage": "Add 'style' parameter to /generate endpoint",
+        "note": "Styles provide subtle guidance - your prompt is still the main driver"
+    }
+
 
 # Video Generation Endpoints
 
 @app.post("/generate")
-async def generate_video(prompt: str, duration: int = 3):
+async def generate_video(
+    prompt: str,
+    duration: int = 3,
+    seed: Optional[int] = None,
+    guidance_scale: Optional[float] = None,
+    num_inference_steps: Optional[int] = None,
+    fps: int = 8,
+    height: int = 512,
+    width: int = 512,
+    negative_prompt: Optional[str] = None,
+    style: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Generate a video from a text prompt
-    
-    Parameters:
-    - prompt: Text description of what you want in the video
-    - duration: Video length in seconds (default: 3)
+    Generate a video from a text prompt w/advanced controls
     """
     global pipeline
     
@@ -495,32 +664,91 @@ async def generate_video(prompt: str, duration: int = 3):
     try:
         logger.info(f"Generating video for prompt: '{prompt}'")
         
-        # Basic validation
+        # Enhanced validation
         if not prompt or len(prompt.strip()) == 0:
             raise HTTPException(
                 status_code=400,
                 detail="Prompt cannot be empty"
             )
         
-        if duration < 1 or duration > 10:
+        if duration < MIN_DURATION or duration > MAX_DURATION:
             raise HTTPException(
                 status_code=400,
-                detail="Duration must be between 1 and 10 seconds"
+                detail=f"Duration must be between {MIN_DURATION} and {MAX_DURATION} seconds"
             )
+        if fps < MIN_FPS or fps > MAX_FPS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"FPS must be between {MIN_FPS} and {MAX_FPS}"
+            )
+        if height > MAX_RESOLUTION or width > MAX_RESOLUTION:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Resolution cannot exceed {MAX_RESOLUTION}x{MAX_RESOLUTION} pixels"
+            )
+        if guidance_scale is not None and (guidance_scale < 1 or guidance_scale > 20):
+            raise HTTPException(
+                status_code=400,
+                detail="Guidance scale must be between 1 and 20"
+            )
+        if num_inference_steps is not None and (num_inference_steps < 10 or num_inference_steps > 50):
+            raise HTTPException(
+                status_code=400,
+                detail="Inference steps must be between 10 and 50"
+            )
+        
+        # Auto-optimize parameters based on prompt and settings
+        optimized_params = optimize_generation_parameters(
+            prompt=prompt,
+            duration=duration,
+            guidance_scale=guidance_scale,
+            num_inference_steps=num_inference_steps,
+            negative_prompt=negative_prompt
+        )
+        
+        # Apply style preset if specified
+        if style:
+            style_preset = get_style_preset(style)
+            if guidance_scale is None:
+                optimized_params['guidance_scale'] = style_preset['guidance_scale']
+            if num_inference_steps is None:
+                optimized_params['num_inference_steps'] = style_preset['num_inference_steps']
+            if negative_prompt is None:
+                optimized_params['negative_prompt'] = style_preset['negative_prompt']
+            # Apply minimal style suffix to prompt
+            prompt = f"{prompt}{style_preset['prompt_suffix']}"
         
         logger.info("Starting video generation...")
         start_time = datetime.now()
         
-        # Simple generation call (parameters optimized for LTX-Video-0.9.7-distilled)
+        # Generation call with optimized parameters
         try:
+            # Use provided seed or generate one from prompt
+            if seed is None:
+                import hashlib
+                prompt_hash = int(hashlib.md5(prompt.encode()).hexdigest()[:8], 16)
+                seed = prompt_hash % (2**31)  # Keep within valid range
+            
+            # Apply minimal enhancement to prompt
+            enhanced_prompt = enhance_prompt(prompt)
+            
+            logger.info(f"Using seed {seed} for prompt: '{prompt}'")
+            logger.info(f"Enhanced prompt: '{enhanced_prompt}'")
+            logger.info(f"Parameters: guidance_scale={optimized_params['guidance_scale']}, "
+                       f"steps={optimized_params['num_inference_steps']}")
+            
+            # Calculate optimal frame count
+            num_frames = max(16, duration * fps)
+            
             video_frames = pipeline(
-                prompt=prompt,
-                num_frames=max(16, duration * 8),     # Higher quality: 8 FPS
-                guidance_scale=7.5,                   
-                num_inference_steps=20,               
-                height=512,                          
-                width=512,
-                generator=torch.Generator(device=pipeline.device).manual_seed(42)
+                prompt=enhanced_prompt,
+                negative_prompt=optimized_params['negative_prompt'],
+                num_frames=num_frames,
+                guidance_scale=optimized_params['guidance_scale'],
+                num_inference_steps=optimized_params['num_inference_steps'],
+                height=height,
+                width=width,
+                generator=torch.Generator(device=pipeline.device).manual_seed(seed)
             ).frames[0]
             
             logger.info(f"Generated {len(video_frames)} frames")
@@ -535,18 +763,28 @@ async def generate_video(prompt: str, duration: int = 3):
                     frames=video_frames,
                     prompt=prompt,
                     duration=duration,
-                    resolution="512x512"
+                    resolution=f"{width}x{height}",
+                    fps=fps
                 )
                 
                 metadata = {
                     "prompt": prompt,
+                    "enhanced_prompt": enhanced_prompt,
                     "duration": duration,
+                    "seed": seed,
                     "frames_generated": len(video_frames),
-                    "resolution": "512x512",
+                    "resolution": f"{width}x{height}",
+                    "fps": fps,
                     "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
                     "created_at": datetime.now().isoformat(),
                     "generation_time_seconds": round(generation_time, 2),
                     "device_used": str(pipeline.device),
+                    "generation_parameters": {
+                        "guidance_scale": optimized_params['guidance_scale'],
+                        "num_inference_steps": optimized_params['num_inference_steps'],
+                        "negative_prompt": optimized_params['negative_prompt'],
+                        "num_frames": num_frames
+                    },
                     "video_info": video_info
                 }
                 save_generation_metadata(video_info["job_id"], metadata)
@@ -554,17 +792,17 @@ async def generate_video(prompt: str, duration: int = 3):
                 
                 # Print video links to terminal
                 print("\n" + "="*60)
-                print("🎬 VIDEO GENERATION COMPLETED! 🎬")
+                print("VIDEO GENERATION COMPLETED!")
                 print("="*60)
-                print(f"📝 Prompt: {prompt}")
-                print(f"🆔 Job ID: {video_info['job_id']}")
-                print(f"📁 Filename: {video_info['filename']}")
-                print(f"⏱️  Generation Time: {round(generation_time, 2)}s")
-                print(f"📏 File Size: {video_info['file_size_mb']} MB")
-                print("\n🔗 ACCESS LINKS:")
-                print(f"   📥 Download: http://localhost:8000/download/{video_info['job_id']}")
-                print(f"   👁️  Preview:  http://localhost:8000/preview/{video_info['job_id']}")
-                print(f"   ℹ️  Status:   http://localhost:8000/status/{video_info['job_id']}")
+                print(f"Prompt: {prompt}")
+                print(f"Job ID: {video_info['job_id']}")
+                print(f"Filename: {video_info['filename']}")
+                print(f"Generation Time: {round(generation_time, 2)}s")
+                print(f"File Size: {video_info['file_size_mb']} MB")
+                print("\n ACCESS LINKS:")
+                print(f"    Download: http://localhost:8000/download/{video_info['job_id']}")
+                print(f"    Preview:  http://localhost:8000/preview/{video_info['job_id']}")
+                print(f"    Status:   http://localhost:8000/status/{video_info['job_id']}")
                 print("="*60 + "\n")
                 
                 return {
@@ -573,14 +811,21 @@ async def generate_video(prompt: str, duration: int = 3):
                     "job_id": video_info["job_id"],
                     "filename": video_info["filename"],
                     "prompt": prompt,
+                    "enhanced_prompt": enhanced_prompt,
                     "duration": duration,
+                    "seed": seed,
                     "frames_generated": len(video_frames),
-                    "resolution": "512x512",
+                    "resolution": f"{width}x{height}",
+                    "fps": fps,
                     "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
                     "file_size_mb": video_info["file_size_mb"],
-                    "fps": video_info["fps"],
                     "generation_time_seconds": round(generation_time, 2),
                     "device_used": str(pipeline.device),
+                    "generation_parameters": {
+                        "guidance_scale": optimized_params['guidance_scale'],
+                        "num_inference_steps": optimized_params['num_inference_steps'],
+                        "negative_prompt": optimized_params['negative_prompt']
+                    },
                     "download_url": f"/download/{video_info['job_id']}",
                     "preview_url": f"/preview/{video_info['job_id']}"
                 }
@@ -616,6 +861,144 @@ async def generate_video(prompt: str, duration: int = 3):
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+
+@app.post("/generate-batch")
+async def generate_batch_videos(
+    prompts: List[str],
+    duration: int = 3,
+    fps: int = 8
+) -> Dict[str, Any]:
+    """
+    Generate multiple videos from a list of prompts
+    
+    Parameters:
+    - prompts: List of text descriptions for videos
+    - duration: Video length in seconds for all videos (default: 3)
+    - fps: Frames per second for all videos (default: 8)
+    """
+    global pipeline
+    
+    if not prompts or len(prompts) == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Prompts list cannot be empty"
+        )
+    
+    if len(prompts) > MAX_BATCH_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_BATCH_SIZE} prompts allowed per batch"
+        )
+    
+    # check if model is loaded
+    if pipeline is None:
+        logger.info("Model not loaded, attempting to load LTX-Video-0.9.7-distilled...")
+        try:
+            load_result = await test_model_loading()
+            if load_result.get("status") != "success":
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Failed to load LTX-Video-0.9.7-distilled model: {load_result.get('message', 'Unknown error')}"
+                )
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to auto-load LTX-Video-0.9.7-distilled model: {str(e)}"
+            )
+    
+    batch_results = []
+    total_start_time = datetime.now()
+    
+    for i, prompt in enumerate(prompts, 1):
+        try:
+            logger.info(f"Generating video {i}/{len(prompts)} for prompt: '{prompt}'")
+            
+            # Generate unique seed for each prompt
+            import hashlib
+            prompt_hash = int(hashlib.md5(f"{prompt}_{i}".encode()).hexdigest()[:8], 16)
+            seed = prompt_hash % (2**31)
+            
+            # Auto-optimize parameters
+            optimized_params = optimize_generation_parameters(prompt, duration)
+            enhanced_prompt = enhance_prompt(prompt)
+            
+            start_time = datetime.now()
+            
+            video_frames = pipeline(
+                prompt=enhanced_prompt,
+                negative_prompt=optimized_params['negative_prompt'],
+                num_frames=max(16, duration * fps),
+                guidance_scale=optimized_params['guidance_scale'],
+                num_inference_steps=optimized_params['num_inference_steps'],
+                height=512,
+                width=512,
+                generator=torch.Generator(device=pipeline.device).manual_seed(seed)
+            ).frames[0]
+            
+            generation_time = (datetime.now() - start_time).total_seconds()
+            
+            # Save video
+            video_info = save_video_frames(
+                frames=video_frames,
+                prompt=prompt,
+                duration=duration,
+                resolution="512x512",
+                fps=fps
+            )
+            
+            # Save metadata
+            metadata = {
+                "prompt": prompt,
+                "enhanced_prompt": enhanced_prompt,
+                "batch_index": i,
+                "total_batch_size": len(prompts),
+                "duration": duration,
+                "seed": seed,
+                "frames_generated": len(video_frames),
+                "resolution": "512x512",
+                "fps": fps,
+                "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
+                "created_at": datetime.now().isoformat(),
+                "generation_time_seconds": round(generation_time, 2),
+                "device_used": str(pipeline.device),
+                "generation_parameters": optimized_params,
+                "video_info": video_info
+            }
+            save_generation_metadata(video_info["job_id"], metadata)
+            
+            batch_results.append({
+                "prompt": prompt,
+                "job_id": video_info["job_id"],
+                "filename": video_info["filename"],
+                "status": "success",
+                "generation_time_seconds": round(generation_time, 2),
+                "file_size_mb": video_info["file_size_mb"],
+                "download_url": f"/download/{video_info['job_id']}",
+                "preview_url": f"/preview/{video_info['job_id']}"
+            })
+            
+            logger.info(f"Batch video {i} completed: {video_info['job_id']}")
+            
+        except Exception as e:
+            logger.error(f"Failed to generate video {i}: {str(e)}")
+            batch_results.append({
+                "prompt": prompt,
+                "status": "error",
+                "error": str(e)
+            })
+    
+    total_time = (datetime.now() - total_start_time).total_seconds()
+    successful_videos = [r for r in batch_results if r.get("status") == "success"]
+    
+    return {
+        "status": "completed",
+        "total_prompts": len(prompts),
+        "successful_generations": len(successful_videos),
+        "failed_generations": len(prompts) - len(successful_videos),
+        "total_batch_time_seconds": round(total_time, 2),
+        "average_time_per_video": round(total_time / len(prompts), 2) if prompts else 0,
+        "results": batch_results
+    }
 
 # Video Download & Preview Endpoints  
 
@@ -804,7 +1187,7 @@ async def preview_video(job_id: str):
         )
 
 @app.get("/status/{job_id}")
-async def get_job_status(job_id: str):
+async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
     Get the status and metadata of a video generation job
     

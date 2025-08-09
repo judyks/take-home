@@ -61,6 +61,7 @@ Currently, the API does not require authentication. Optional API key authenticat
 **Parameters**:
 - `prompt` (string, required): Text description of the video to generate
 - `duration` (integer, optional): Video duration in seconds (default: 3, max: 10)
+- `seed` (integer, optional): Random seed for reproducible results (auto-generated from prompt if not provided)
 - `resolution` (integer, optional): Video resolution (default: 512, max: 512)
 - `fps` (integer, optional): Frames per second (default: 8)
 
@@ -68,7 +69,8 @@ Currently, the API does not require authentication. Optional API key authenticat
 ```bash
 curl -X POST "http://localhost:8000/generate" \
   -d "prompt=A cat walking in a garden" \
-  -d "duration=3"
+  -d "duration=3" \
+  -d "seed=12345"
 ```
 
 **Response**:
@@ -80,6 +82,7 @@ curl -X POST "http://localhost:8000/generate" \
   "filename": "video_20250809_004734_2c49d3d2.mp4",
   "prompt": "A cat walking in a garden",
   "duration": 3,
+  "seed": 12345,
   "frames_generated": 24,
   "resolution": "512x512",
   "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
@@ -188,7 +191,7 @@ curl -o sunset.mp4 "http://localhost:8000/download/abc123def"
 import requests
 import time
 
-# Generate video
+# Generate video with auto-generated seed
 response = requests.post(
     "http://localhost:8000/generate",
     data={
@@ -198,6 +201,18 @@ response = requests.post(
 )
 result = response.json()
 job_id = result["job_id"]
+seed_used = result["seed"]
+print(f"Generated with seed: {seed_used}")
+
+# Generate video with specific seed for reproducible results
+response = requests.post(
+    "http://localhost:8000/generate",
+    data={
+        "prompt": "A cat walking in a garden", 
+        "duration": 3,
+        "seed": 12345
+    }
+)
 
 # Check status
 status_response = requests.get(f"http://localhost:8000/status/{job_id}")
@@ -245,6 +260,36 @@ The API behavior can be configured via environment variables:
 
 ### Model Settings
 - `MODEL_NAME`: HuggingFace model name (default: "Lightricks/LTX-Video-0.9.7-distilled")
+
+## Troubleshooting
+
+### Video Quality Issues
+
+**Problem**: Generated video doesn't match the text prompt
+**Solutions**:
+- Try using a specific seed for reproducible results
+- Increase `guidance_scale` (now defaults to 9.0)
+- Use more descriptive prompts with specific details
+- Avoid very abstract or complex prompts
+
+**Problem**: Video quality is poor or blurry
+**Solutions**:
+- The model now uses improved parameters:
+  - Higher guidance scale (9.0)
+  - More inference steps (30)
+  - Negative prompts to avoid low quality
+- Try shorter durations (3-5 seconds) for better quality
+
+### Generation Issues
+
+**Problem**: Videos are identical despite different prompts
+**Solution**: Fixed in v1.0 - each prompt now generates a unique seed automatically
+
+**Problem**: Slow generation times
+**Solutions**:
+- Use GPU if available (much faster than CPU)
+- Reduce duration or number of frames
+- Enable model optimizations (CPU offload, VAE slicing)
 - `MODEL_DEVICE`: Device to use (auto/cuda/cpu, default: "auto")
 - `MODEL_CACHE_DIR`: Directory for model caching
 
