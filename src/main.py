@@ -1,5 +1,4 @@
-# main.py - The heart of our video generation API
-# This file creates a web server that will eventually generate videos
+# main.py - video generation API server
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
@@ -14,7 +13,7 @@ from typing import List
 from PIL import Image
 import numpy as np
 
-# Try to import PyTorch, fallback gracefully if there are CUDA issues
+# try to import PyTorch -> fallback if CUDA issues
 try:
     import torch
     TORCH_AVAILABLE = True
@@ -28,7 +27,7 @@ except Exception as e:
     print(f"Failed to import PyTorch: {e}")
     TORCH_AVAILABLE = False
     
-    # Create a comprehensive mock torch module for graceful degradation
+    # create mock torch module
     class MockTorch:
         class cuda:
             @staticmethod
@@ -68,23 +67,20 @@ except Exception as e:
     torch = MockTorch()
     print("Using MockTorch for graceful fallback")
 
-# Configure logging so we can see what's happening
+# configure logging so we can see what's happening
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global variable to store our model (will be None until loaded)
+# global variable to store model
 pipeline = None
 
-# ============================================================================
+
 # Video Saving & File Management Functions
-# ============================================================================
 
 def ensure_output_directories():
     """Create necessary output directories if they don't exist"""
-    # Use relative paths that work both locally and in Docker
     base_dir = os.getcwd()
     if not base_dir.endswith("take-home"):
-        # Go up one level to find outputs directory
         base_dir = os.path.dirname(base_dir)
     
     directories = [
@@ -100,7 +96,6 @@ def get_output_path(subdir: str) -> str:
     """Get the correct output path for a subdirectory"""
     base_dir = os.getcwd()
     if not base_dir.endswith("take-home"):
-        # Go up one level to find outputs directory
         base_dir = os.path.dirname(base_dir)
     return os.path.join(base_dir, "outputs", subdir)
 
@@ -118,51 +113,46 @@ def save_video_frames(frames: List, prompt: str, duration: int, resolution: str)
     - Dictionary with job_id, filename, and file paths
     """
     try:
-        # Ensure output directories exist
         ensure_output_directories()
         
-        # Generate unique identifiers
         job_id = str(uuid.uuid4())[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"video_{timestamp}_{job_id}.mp4"
         
-        # Full paths for files
         video_path = os.path.join(get_output_path("videos"), filename)
         
-        # Convert frames to numpy arrays if they're PIL Images
+        # frames -> numpy arrays if PIL images
         processed_frames = []
         for frame in frames:
             if hasattr(frame, 'numpy'):  # PyTorch tensor
                 frame_array = frame.cpu().numpy()
-                # Convert from (C, H, W) to (H, W, C) if needed
                 if frame_array.shape[0] == 3:
                     frame_array = np.transpose(frame_array, (1, 2, 0))
-                # Ensure values are in 0-255 range
                 if frame_array.max() <= 1.0:
                     frame_array = (frame_array * 255).astype(np.uint8)
                 processed_frames.append(frame_array)
-            elif isinstance(frame, Image.Image):  # PIL Image
+            elif isinstance(frame, Image.Image): 
                 processed_frames.append(np.array(frame))
-            elif isinstance(frame, np.ndarray):  # Already numpy array
+            elif isinstance(frame, np.ndarray):
                 processed_frames.append(frame)
             else:
                 logger.warning(f"Unknown frame type: {type(frame)}")
                 processed_frames.append(np.array(frame))
         
-        # Calculate FPS (frames per second)
+        # calculate FPS (frames per second)
         fps = len(processed_frames) / duration if duration > 0 else 8
         
-        # Save as MP4 video
+        # save as MP4 video
         logger.info(f"Saving video with {len(processed_frames)} frames at {fps:.1f} FPS")
         
-        # Use imageio to save MP4 with explicit format
+        # imageio to save MP4
         writer = imageio.get_writer(
             video_path, 
             fps=fps, 
-            quality=7,  # Good balance between quality and file size
-            codec='libx264',  # Standard H.264 codec for compatibility
-            format='FFMPEG',  # Explicitly use FFMPEG for MP4
-            output_params=['-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2']  # Ensure even dimensions
+            quality=7,  
+            codec='libx264',  # standard for compatibility
+            format='FFMPEG',  # for MP4
+            output_params=['-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2']
         )
         
         for frame in processed_frames:
@@ -209,212 +199,18 @@ def find_video_file(job_id: str) -> str:
             return os.path.join(videos_dir, filename)
     return None
 
-# Create the FastAPI application
-# This creates a web server that can receive HTTP requests
+# create the FastAPI application (web server to receive HTTP requests)
 app = FastAPI(
     title="LTX-Video-0.9.7-distilled Generation API",
     description="Converts text prompts into videos using Lightricks LTX-Video-0.9.7-distilled model",
     version="1.0.0"
 )
 
-# ============================================================================
-# Video Gallery & Web Interface
-# ============================================================================
 
-@app.get("/gallery")
-async def video_gallery():
-    """
-    Web interface showing all generated videos with working preview and download links
-    """
-    try:
-        videos_dir = get_output_path("videos")
-        metadata_dir = get_output_path("metadata")
-        videos_data = []
-        
-        if os.path.exists(metadata_dir):
-            for metadata_file in sorted(os.listdir(metadata_dir), reverse=True):
-                if metadata_file.endswith('.json'):
-                    job_id = metadata_file.replace('.json', '')
-                    metadata_path = os.path.join(metadata_dir, metadata_file)
-                    
-                    try:
-                        with open(metadata_path, 'r') as f:
-                            metadata = json.load(f)
-                        
-                        video_path = find_video_file(job_id)
-                        if video_path and os.path.exists(video_path):
-                            file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
-                            videos_data.append({
-                                'job_id': job_id,
-                                'prompt': metadata.get('prompt', 'Unknown'),
-                                'file_size_mb': round(file_size_mb, 2),
-                                'duration': metadata.get('duration', 'Unknown'),
-                                'created_at': metadata.get('created_at', 'Unknown')[:16].replace('T', ' '),
-                                'generation_time': metadata.get('generation_time_seconds', 'Unknown')
-                            })
-                    except:
-                        continue
-        
-        # Generate HTML gallery
-        videos_html = ""
-        for video in videos_data:
-            videos_html += f"""
-            <div class="video-item">
-                <h3>"{video['prompt']}"</h3>
-                <div class="video-container">
-                    <video width="320" height="320" controls muted>
-                        <source src="/download/{video['job_id']}" type="video/mp4">
-                        Your browser does not support the video tag.
-                    </video>
-                </div>
-                <div class="video-info">
-                    <p><strong>Job ID:</strong> {video['job_id']}</p>
-                    <p><strong>Duration:</strong> {video['duration']}s</p>
-                    <p><strong>Size:</strong> {video['file_size_mb']} MB</p>
-                    <p><strong>Generated:</strong> {video['created_at']}</p>
-                    <p><strong>Generation Time:</strong> {video['generation_time']}s</p>
-                </div>
-                <div class="video-actions">
-                    <a href="/download/{video['job_id']}" class="download-btn">Download MP4</a>
-                    <a href="/preview/{video['job_id']}" class="preview-btn">Full Preview</a>
-                </div>
-            </div>
-            """
-        
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Video Gallery - LTX-Video Generation API</title>
-            <style>
-                body {{ 
-                    font-family: Arial, sans-serif; 
-                    max-width: 1200px; 
-                    margin: 0 auto; 
-                    padding: 20px;
-                    background-color: #f5f5f5;
-                }}
-                .header {{ 
-                    background: white; 
-                    padding: 20px; 
-                    border-radius: 10px; 
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    margin-bottom: 20px;
-                    text-align: center;
-                }}
-                .video-grid {{ 
-                    display: grid; 
-                    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); 
-                    gap: 20px;
-                }}
-                .video-item {{ 
-                    background: white; 
-                    padding: 20px; 
-                    border-radius: 10px; 
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                }}
-                .video-container {{ 
-                    text-align: center; 
-                    margin: 15px 0; 
-                }}
-                video {{ 
-                    border: 2px solid #ddd; 
-                    border-radius: 8px; 
-                    max-width: 100%;
-                }}
-                .video-info {{ 
-                    background: #f8f9fa; 
-                    padding: 10px; 
-                    border-radius: 5px; 
-                    margin: 10px 0;
-                    font-size: 0.9em;
-                }}
-                .video-actions {{ 
-                    text-align: center; 
-                    margin-top: 15px;
-                }}
-                .download-btn {{ 
-                    background: #28a745; 
-                    color: white; 
-                    padding: 8px 16px; 
-                    text-decoration: none; 
-                    border-radius: 5px; 
-                    margin: 0 5px;
-                    display: inline-block;
-                }}
-                .preview-btn {{ 
-                    background: #007bff; 
-                    color: white; 
-                    padding: 8px 16px; 
-                    text-decoration: none; 
-                    border-radius: 5px; 
-                    margin: 0 5px;
-                    display: inline-block;
-                }}
-                .nav-links {{ 
-                    margin: 20px 0;
-                    text-align: center;
-                }}
-                .nav-links a {{ 
-                    background: #6c757d; 
-                    color: white; 
-                    padding: 10px 20px; 
-                    text-decoration: none; 
-                    border-radius: 5px; 
-                    margin: 0 10px;
-                }}
-                h3 {{ 
-                    color: #333; 
-                    margin-top: 0;
-                    text-align: center;
-                }}
-            </style>
-        </head>
-        <body>
-            <div class="header">
-                <h1>🎬 Video Gallery</h1>
-                <p>Generated videos using LTX-Video-0.9.7-distilled model</p>
-                <div class="nav-links">
-                    <a href="/">API Home</a>
-                    <a href="/docs">API Docs</a>
-                    <a href="/health">Health Check</a>
-                </div>
-            </div>
-            
-            <div class="video-grid">
-                {videos_html if videos_html else '<p style="text-align: center; grid-column: 1/-1;">No videos generated yet. Use the /generate endpoint to create videos!</p>'}
-            </div>
-            
-            <div style="text-align: center; margin-top: 40px; padding: 20px; background: white; border-radius: 10px;">
-                <h3>💡 Access Notes</h3>
-                <p><strong>Local Access:</strong> All links work when accessed from this machine</p>
-                <p><strong>External Access:</strong> Download links work, preview links require localhost access</p>
-                <p><strong>Generate New Videos:</strong> Use POST /generate with prompt and duration parameters</p>
-            </div>
-        </body>
-        </html>
-        """
-        
-        return HTMLResponse(content=html_content)
-        
-    except Exception as e:
-        return HTMLResponse(
-            content=f"""
-            <html>
-                <head><title>Gallery Error</title></head>
-                <body>
-                    <h2>Gallery Error</h2>
-                    <p>Failed to load video gallery: {str(e)}</p>
-                    <a href="/">← Back to home</a>
-                </body>
-            </html>
-            """,
-            status_code=500
-        )
 
-# ============================================================================
+
+
 # Basic Endpoints (Routes)
-# ============================================================================
 
 @app.get("/")
 async def root():
@@ -422,7 +218,6 @@ async def root():
     The homepage of our API with links to generated videos
     When someone visits http://localhost:8000/ they'll see this message
     """
-    # Get list of recent videos
     try:
         videos_dir = get_output_path("videos")
         metadata_dir = get_output_path("metadata")
@@ -509,7 +304,7 @@ async def test_model_loading():
     try:
         logger.info("Starting LTX-Video-0.9.7-distilled model loading...")
         
-        # Check if model is already loaded
+        # check if model is already loaded
         if pipeline is not None:
             return {
                 "status": "success",
@@ -518,7 +313,7 @@ async def test_model_loading():
                 "model_id": "Lightricks/LTX-Video-0.9.7-distilled"
             }
         
-        # Check if PyTorch is available
+        # check if PyTorch is available
         if not TORCH_AVAILABLE:
             return {
                 "status": "pytorch_unavailable",
@@ -529,9 +324,8 @@ async def test_model_loading():
                 "solution": "CUDA library compatibility issue - can be resolved with library updates"
             }
         
-        # Import the required pipeline class
         try:
-            from diffusers import LTXPipeline  # Use LTXPipeline instead of LTXVideoPipeline
+            from diffusers import LTXPipeline
             logger.info("Successfully imported LTXPipeline")
         except ImportError as e:
             logger.error(f"Cannot import LTXPipeline: {e}")
@@ -541,8 +335,6 @@ async def test_model_loading():
                 "message": f"LTXPipeline not available: {str(e)}",
                 "hint": "Please update diffusers to latest version: pip install --upgrade diffusers"
             }
-        
-        # Load the specific LTX-Video-0.9.7-distilled model
         logger.info("Loading LTX-Video-0.9.7-distilled model (this may take a few minutes)...")
         
         try:
@@ -554,7 +346,7 @@ async def test_model_loading():
         except Exception as model_error:
             logger.error(f"Failed to load LTX-Video-0.9.7-distilled: {model_error}")
             
-            # Try fallback to ModelScope model
+            # fallback to ModelScope
             logger.info("Trying fallback model: damo-vilab/text-to-video-ms-1.7b")
             try:
                 from diffusers import DiffusionPipeline
@@ -575,12 +367,12 @@ async def test_model_loading():
                     "hint": "Check internet connection and model availability"
                 }
         
-        # Move to appropriate device (GPU if available, CPU otherwise)
+        # Move to device (GPU if available, if not -> CPU)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         pipeline = pipeline.to(device)
         logger.info(f"Model moved to {device}")
         
-        # Enable memory optimizations
+        # memory optimizations
         try:
             if hasattr(pipeline, 'enable_model_cpu_offload'):
                 pipeline.enable_model_cpu_offload()
@@ -654,17 +446,14 @@ async def debug_diffusers():
     try:
         import diffusers
         
-        # Get all available classes in diffusers
         available_classes = [name for name in dir(diffusers) if not name.startswith('_')]
-        
-        # Look for pipeline classes specifically
         pipeline_classes = [name for name in available_classes if 'Pipeline' in name]
         
         return {
             "diffusers_version": diffusers.__version__,
             "total_classes": len(available_classes),
             "pipeline_classes": pipeline_classes,
-            "all_classes": available_classes[:20]  # First 20 to avoid too much data
+            "all_classes": available_classes[:20]  # first 20 so its not too much data
         }
     except Exception as e:
         return {
@@ -673,10 +462,7 @@ async def debug_diffusers():
         }
 
 
-
-# ============================================================================
 # Video Generation Endpoints
-# ============================================================================
 
 @app.post("/generate")
 async def generate_video(prompt: str, duration: int = 3):
@@ -689,7 +475,7 @@ async def generate_video(prompt: str, duration: int = 3):
     """
     global pipeline
     
-    # Check if model is loaded, load it if not
+    # check if model is loaded, load it if not
     if pipeline is None:
         logger.info("Model not loaded, attempting to load LTX-Video-0.9.7-distilled...")
         try:
@@ -722,34 +508,28 @@ async def generate_video(prompt: str, duration: int = 3):
                 detail="Duration must be between 1 and 10 seconds"
             )
         
-        # For now, let's just test that we can call the pipeline
-        # We'll start simple and improve step by step
         logger.info("Starting video generation...")
-        
-        # Track generation time
         start_time = datetime.now()
         
         # Simple generation call (parameters optimized for LTX-Video-0.9.7-distilled)
         try:
-            # LTX-Video-0.9.7-distilled optimized parameters
             video_frames = pipeline(
                 prompt=prompt,
                 num_frames=max(16, duration * 8),     # Higher quality: 8 FPS
-                guidance_scale=7.5,                   # Optimal for LTX-Video distilled
-                num_inference_steps=20,               # Good balance for distilled model
-                height=512,                           # Standard resolution for LTX-Video
+                guidance_scale=7.5,                   
+                num_inference_steps=20,               
+                height=512,                          
                 width=512,
-                generator=torch.Generator(device=pipeline.device).manual_seed(42)  # Consistent results
+                generator=torch.Generator(device=pipeline.device).manual_seed(42)
             ).frames[0]
             
             logger.info(f"Generated {len(video_frames)} frames")
             
-            # Calculate generation time
             end_time = datetime.now()
             generation_time = (end_time - start_time).total_seconds()
             logger.info(f"Generation completed in {generation_time:.1f} seconds")
             
-            # NEW: Save the generated frames as an MP4 video
+            # save generated frames as an MP4
             try:
                 video_info = save_video_frames(
                     frames=video_frames,
@@ -758,7 +538,6 @@ async def generate_video(prompt: str, duration: int = 3):
                     resolution="512x512"
                 )
                 
-                # Save metadata about this generation
                 metadata = {
                     "prompt": prompt,
                     "duration": duration,
@@ -771,8 +550,22 @@ async def generate_video(prompt: str, duration: int = 3):
                     "video_info": video_info
                 }
                 save_generation_metadata(video_info["job_id"], metadata)
-                
                 logger.info(f"Video generation completed! Job ID: {video_info['job_id']}")
+                
+                # Print video links to terminal
+                print("\n" + "="*60)
+                print("🎬 VIDEO GENERATION COMPLETED! 🎬")
+                print("="*60)
+                print(f"📝 Prompt: {prompt}")
+                print(f"🆔 Job ID: {video_info['job_id']}")
+                print(f"📁 Filename: {video_info['filename']}")
+                print(f"⏱️  Generation Time: {round(generation_time, 2)}s")
+                print(f"📏 File Size: {video_info['file_size_mb']} MB")
+                print("\n🔗 ACCESS LINKS:")
+                print(f"   📥 Download: http://localhost:8000/download/{video_info['job_id']}")
+                print(f"   👁️  Preview:  http://localhost:8000/preview/{video_info['job_id']}")
+                print(f"   ℹ️  Status:   http://localhost:8000/status/{video_info['job_id']}")
+                print("="*60 + "\n")
                 
                 return {
                     "status": "success",
@@ -794,7 +587,6 @@ async def generate_video(prompt: str, duration: int = 3):
                 
             except Exception as save_error:
                 logger.error(f"Failed to save video: {str(save_error)}")
-                # Still return success for generation, but note saving failed
                 return {
                     "status": "partial_success",
                     "message": f"Video generated but saving failed: {str(save_error)}",
@@ -817,7 +609,6 @@ async def generate_video(prompt: str, duration: int = 3):
             }
         
     except HTTPException:
-        # Re-raise HTTP exceptions (like 400, 503)
         raise
     except Exception as e:
         logger.error(f"Unexpected error in generate: {str(e)}")
@@ -826,9 +617,7 @@ async def generate_video(prompt: str, duration: int = 3):
             detail=f"Internal server error: {str(e)}"
         )
 
-# ============================================================================
 # Video Download & Preview Endpoints  
-# ============================================================================
 
 @app.get("/download/{job_id}")
 async def download_video(job_id: str):
@@ -839,7 +628,6 @@ async def download_video(job_id: str):
     - job_id: Unique identifier for the video generation job
     """
     try:
-        # Find the video file
         video_path = find_video_file(job_id)
         
         if not video_path or not os.path.exists(video_path):
@@ -880,7 +668,7 @@ async def preview_video(job_id: str):
     - job_id: Unique identifier for the video generation job
     """
     try:
-        # Check if video exists
+        # check if video exists
         video_path = find_video_file(job_id)
         
         if not video_path or not os.path.exists(video_path):
@@ -898,7 +686,7 @@ async def preview_video(job_id: str):
                 status_code=404
             )
         
-        # Load metadata if available
+        # load metadata if available
         metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
         metadata = {}
         if os.path.exists(metadata_path):
@@ -1059,12 +847,6 @@ async def get_job_status(job_id: str):
             "message": f"Failed to get job status: {str(e)}"
         }
 
-# ============================================================================
-# Future Endpoints  
-# ============================================================================
-
-# TODO: Add cleanup/management endpoints for old videos
-
-# This runs the server when you call "python main.py"
+# for: "python main.py"
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -204,7 +204,7 @@ class VideoGenerationDemo:
                     else:
                         filename = f"video_{job_id}.mp4"
                 
-                # Save file
+                # save file
                 with open(filename, 'wb') as f:
                     f.write(response.content)
                 
@@ -235,7 +235,6 @@ class VideoGenerationDemo:
                 print(f"   Service: {data.get('message', 'Video Generation API')}")
                 print(f"   Model: {data.get('model')}")
                 print(f"   Documentation: {self.base_url}/docs")
-                print(f"   Gallery: {self.base_url}/gallery")
                 
                 if data.get('recent_videos'):
                     print(f"   Recent Videos: {len(data['recent_videos'])} found")
@@ -249,7 +248,6 @@ class VideoGenerationDemo:
             return False
     
     def run_demo(self, prompt: str = "A cat walking in a garden", duration: int = 3):
-        """Run complete demo workflow"""
         print("Video Generation API Demo")
         print("=" * 50)
         
@@ -276,7 +274,6 @@ class VideoGenerationDemo:
             print("   • Model download failed")
             print(f"\nYou can still explore the API:")
             print(f"   • Documentation: {self.base_url}/docs")
-            print(f"   • Gallery: {self.base_url}/gallery")
             print(f"   • Health: {self.base_url}/health")
             return False
         
@@ -293,7 +290,6 @@ class VideoGenerationDemo:
             print(f"Job ID: {job_id}")
             print(f"Prompt: '{prompt}'")
             print(f"\nNext Steps:")
-            print(f"   • View in gallery: {self.base_url}/gallery")
             print(f"   • Preview online: {self.base_url}/preview/{job_id}")
             print(f"   • Generate more: {self.base_url}/docs")
             return True
@@ -307,12 +303,12 @@ def main():
     print("Video Generation API Demo")
     print("Initializing...")
     
-    # Get configuration
+    # get configuration
     base_url = os.getenv("API_BASE_URL", "http://localhost:8000")
     prompt = os.getenv("DEMO_PROMPT", "A cat walking in a garden")
     duration = int(os.getenv("DEMO_DURATION", "3"))
     
-    # Allow command line overrides
+    # allow command line overrides
     if len(sys.argv) > 1:
         if sys.argv[1].startswith("http"):
             base_url = sys.argv[1]

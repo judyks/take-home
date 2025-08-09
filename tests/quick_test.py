@@ -75,19 +75,6 @@ def test_api(base_url="http://localhost:8000"):
     except Exception as e:
         print(f"   Model status error: {e}")
     
-    # Test 5: Gallery Endpoint
-    print("\n5. Testing gallery endpoint...")
-    tests_total += 1
-    try:
-        response = requests.get(f"{base_url}/gallery", timeout=10)
-        if response.status_code == 200:
-            print("   Gallery endpoint works")
-            tests_passed += 1
-        else:
-            print(f"   Gallery failed: {response.status_code}")
-    except Exception as e:
-        print(f"   Gallery error: {e}")
-    
     # Results Summary
     print("\n" + "=" * 50)
     print(f"Test Results: {tests_passed}/{tests_total} tests passed")
@@ -97,7 +84,6 @@ def test_api(base_url="http://localhost:8000"):
         print(f"\nAccess the API:")
         print(f"   • Homepage: {base_url}")
         print(f"   • API Docs: {base_url}/docs")
-        print(f"   • Gallery: {base_url}/gallery")
         print(f"   • Health: {base_url}/health")
         
         print(f"\nGenerate a video:")

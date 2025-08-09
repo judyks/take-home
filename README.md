@@ -1,479 +1,169 @@
 # Video Generation API
 
-A containerized FastAPI service that generates videos from text prompts using the Lightricks/LTX-Video-0.9.7-distilled model. Optimized for NVIDIA GPU deployment with comprehensive testing and monitoring.
+API for generating videos from text prompts using the Lightricks/LTX-Video-0.9.7-distilled model. Built with FastAPI and Docker for easy deployment and production use.
 
 ## Features
 
-- 🎬 **Text-to-Video Generation**: Create videos from natural language descriptions
-- 🚀 **GPU Accelerated**: Optimized for NVIDIA GPUs with CUDA support
-- 📦 **Containerized Deployment**: Docker and Docker Compose ready
-- 🔍 **Interactive Documentation**: Built-in Swagger UI at `/docs`
-- 🖼️ **Web Gallery**: Browse and preview generated videos
-- 🧪 **Comprehensive Testing**: Automated test suites included
-- ⚡ **Health Monitoring**: Built-in health checks and GPU monitoring
+- Create videos from descriptive text prompts
+- GPU acceleration with CPU fallback
+- Docker containerization with health checks and monitoring
+- Built-in video preview and download endpoints
 
 ## Quick Start
 
-### One-Command Deployment
+### Prerequisites
 
-```bash
-./deploy.sh
-```
+- Docker and Docker Compose
+- NVIDIA GPU with CUDA support (optional, CPU fallback available)
 
-This script will build the Docker image, start the service, and run basic tests.
+### Installation
 
-### Manual Deployment
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd take-home
+   ```
 
-```bash
-# Build and start the service
-docker-compose up --build -d
+2. **Start the service**
+   ```bash
+   docker-compose up -d
+   ```
 
-# Verify the API is running
-curl http://localhost:8000/health
+3. **Verify the installation**
+   ```bash
+   curl http://localhost:8000/health
+   ```
 
-# Generate your first video
-curl -X POST "http://localhost:8000/generate?prompt=A%20cat%20walking&duration=3"
-```
+4. **Generate your first video**
+   ```bash
+   curl -X POST "http://localhost:8000/generate" \
+     -d "prompt=A cat walking in a garden" \
+     -d "duration=3"
+   ```
+
+The API will be available at `http://localhost:8000` with interactive documentation at `http://localhost:8000/docs`.
 
 ## Project Structure
 
 ```
-.
-├── API_DOCUMENTATION.md      # Detailed API reference
-├── README.md                 # This file
-├── Dockerfile               # Container definition
-├── docker-compose.yml       # Service orchestration
-├── deploy.sh                # One-command deployment
-├── demo.py                  # End-to-end demo script
-├── requirements.txt         # Python dependencies
-├── configs/
-│   └── settings.py         # Application configuration
+take-home/
+├── .vscode/
+│   └── settings.json        # VS Code project settings (linting, formatting)
 ├── src/
-│   └── main.py            # FastAPI application
+│   └── main.py              # Main FastAPI application
+├── configs/
+│   └── settings.py          # Configuration management
+├── outputs/
+│   ├── videos/              # Generated video files
+│   └── metadata/            # Video metadata storage
 ├── tests/
-│   ├── quick_test.py      # Basic functionality tests
-│   └── test_video_generation.py  # Comprehensive tests
-└── outputs/               # Generated videos and metadata
-    ├── videos/
-    └── metadata/
+│   ├── test_video_generation.py
+│   └── quick_test.py
+├── .env.example           # Environment configuration template
+├── .gitignore             # Git ignore file (excludes venv, .env, etc.)
+├── docker-compose.yml     # Production deployment
+├── Dockerfile             # Container configuration
+├── requirements.txt       # Python dependencies
+├── deploy.sh              # Deployment script
+├── demo.py                # Usage examples
+├── API_DOCUMENTATION.md   
+└── README.md             
 ```
 
-## Usage Examples
+## Development
 
-### Generate a Video
+### Local Development Setup
 
+1. **Create a virtual environment** (outside the project directory)
+   ```bash
+   cd .. 
+   python -m venv venv
+   source venv/bin/activate  # Linux/Mac
+   # or
+   venv\Scripts\activate     # Windows
+   ```
+
+2. **Navigate back to the project and install dependencies**
+   ```bash
+   cd take-home
+   pip install -r requirements.txt
+   ```
+
+3. **Run the development server**
+   ```bash
+   python src/main.py
+   ```
+
+### VS Code Setup
+
+The project includes VS Code settings for consistent development:
+- **Python interpreter**: Automatically points to `../venv/bin/python`
+- **Linting**: Flake8 enabled for code quality
+- **Formatting**: Black formatter for consistent code style
+- **Environment**: Auto-activates virtual environment in terminal
+
+### Testing
+
+Run the test suite:
 ```bash
-curl -X POST "http://localhost:8000/generate" 
-  -d "prompt=A beautiful sunset over the ocean" 
-  -d "duration=5"
-```
-
-### Check Generation Status
-
-```bash
-curl "http://localhost:8000/status/{job_id}"
-```
-
-### Download Video
-
-```bash
-curl -o video.mp4 "http://localhost:8000/download/{job_id}"
-```
-
-## Testing
-
-### Run All Tests
-
-```bash
-# Quick functionality test
-python tests/quick_test.py
-
-# Comprehensive test suite
 python tests/test_video_generation.py
-
-# End-to-end demo
-python demo.py
+python tests/quick_test.py
 ```
 
-## Configuration
+### Environment Configuration
 
-### Environment Variables
-
-Key configuration options (see `configs/settings.py` for full list):
-
+Copy the environment template and customize as needed:
 ```bash
-# Model Settings
-MODEL_NAME=Lightricks/LTX-Video-0.9.7-distilled
-MODEL_DEVICE=auto  # auto, cuda, cpu
-MAX_VIDEO_DURATION=10
-
-# API Settings
-API_HOST=0.0.0.0
-API_PORT=8000
-LOG_LEVEL=INFO
-
-# Storage Settings
-OUTPUT_DIR=./outputs
-CLEANUP_AFTER_DAYS=7
+cp .env.example .env
 ```
 
-### Docker Environment
+### Configuration
 
-Create a `.env` file for Docker Compose:
+The application can be configured via environment variables:
 
-```bash
-CUDA_VISIBLE_DEVICES=0
-MODEL_NAME=Lightricks/LTX-Video-0.9.7-distilled
-MAX_VIDEO_DURATION=10
-LOG_LEVEL=INFO
-```
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_HOST` | `0.0.0.0` | Server host |
+| `API_PORT` | `8000` | Server port |
+| `MODEL_DEVICE` | `auto` | Device to use (auto/cuda/cpu) |
+| `MAX_VIDEO_DURATION` | `10` | Maximum video duration (seconds) |
+| `OUTPUT_DIR` | `./outputs` | Output directory for videos |
 
-## Management Commands
+## Model Information
 
-```bash
-# Service Management
-docker-compose ps                    # Check status
-docker-compose logs -f video-api     # View logs
-docker-compose down                  # Stop service
-docker-compose restart               # Restart service
+- **Model**: Lightricks/LTX-Video-0.9.7-distilled
+- **Input**: Text prompts
+- **Output**: MP4 videos (512x512 resolution)
+- **Duration**: 1-10 seconds
+- **Frame Rate**: 8 FPS (configurable)
 
-# Development
-docker-compose exec video-api bash   # Shell access
-docker-compose build --no-cache      # Rebuild image
-```
+## Deployment
 
-## System Requirements
+### Production Deployment
 
-- **GPU**: NVIDIA GPU with CUDA support (recommended)
-- **Memory**: 16GB+ RAM, 8GB+ GPU memory
-- **Storage**: 50GB+ available disk space
-- **Software**: Docker and Docker Compose
+1. **Deploy with Docker Compose**
+   ```bash
+   ./deploy.sh
+   ```
 
-## Troubleshooting
+2. **Scale the service**
+   ```bash
+   docker-compose up -d --scale video-api=3
+   ```
 
-### Common Issues
+3. **Monitor logs**
+   ```bash
+   docker-compose logs -f video-api
+   ```
 
-- **API Not Starting**: Check `docker-compose ps` and `docker-compose logs video-api`
-- **CUDA Errors**: Ensure NVIDIA Docker runtime installed, try `docker-compose build --no-cache`
-- **Out of Memory**: Reduce video duration or restart container
-- **Model Loading Fails**: Check internet connection for HuggingFace downloads
 
-### Health Checks
+## Monitoring 
 
-```bash
-curl http://localhost:8000/health     # API health
-curl http://localhost:8000/model-status  # Model status
-nvidia-smi                           # GPU status
-```
+- **Health Endpoint**: `/health` - System status and GPU info
+- **Model Status**: `/model-status` - Model loading and memory usage
+- **Metrics**: Built-in generation time and resource usage tracking
+- **Logs**: Structured JSON logging
 
-## Documentation
-
-- **API Reference**: [API_DOCUMENTATION.md](./API_DOCUMENTATION.md)
-- **Interactive Docs**: http://localhost:8000/docs (when running)
-- **Video Gallery**: http://localhost:8000/gallery (when running)
-
-## License
-
-This project is provided as-is for evaluation purposes.
-```leshooting
-
-### Common Issues
-
-#### API Not Starting
-- **Symptom**: `curl: (7) Failed to connect to localhost port 8000`
-- **Solution**: Check if Docker is running: `docker-compose ps`
-- **Alternative**: Check logs: `docker-compose logs video-api`
-
-#### CUDA Errors on Start
-- **Symptom**: `RuntimeError: CUDA out of memory` or similar
-- **Solution**: This usually indicates a mismatch between the Docker runtime and NVIDIA drivers
-- **Fix**: Try rebuilding the image: `docker-compose build --no-cache`
-- **Alternative**: Ensure NVIDIA Docker runtime is installed
-
-#### Model Loading Fails
-- **Symptom**: Model loading endpoint returns errors
-- **Solution**: Check internet connection for HuggingFace model download
-- **Alternative**: Verify GPU memory availability: `nvidia-smi`
-
-#### Out of Memory (OOM)
-- **Symptom**: Generation fails with memory errors
-- **Solution**: Reduce video duration or resolution
-- **Alternative**: Restart container to clear GPU memory: `docker-compose restart`
-
-#### Video Download Fails
-- **Symptom**: 404 errors when downloading videos
-- **Solution**: Check if video generation completed: `curl http://localhost:8000/status/{job_id}`
-- **Alternative**: Check storage permissions and disk space
-
-### Performance Issues
-
-#### Slow Generation
-- **Cause**: CPU-only mode or insufficient GPU memory
-- **Solution**: Verify GPU is being used: `nvidia-smi`
-- **Optimization**: Use shorter prompts and reduce inference steps
-
-#### Storage Full
-- **Symptom**: Cannot save videos
-- **Solution**: Clean old videos manually or adjust `CLEANUP_AFTER_DAYS`
-- **Prevention**: Monitor disk usage with `df -h`
-
-### Debugging Commands
-
-```bash
-# Check container status
-docker-compose ps
-
-# View real-time logs
-docker-compose logs -f video-api
-
-# Check GPU usage
-nvidia-smi
-
-# Test API health
-curl http://localhost:8000/health
-
-# Get shell access to container
-docker-compose exec video-api bash
-
-# Check disk space
-df -h
-
-# Check model loading status
-curl http://localhost:8000/model-status
-```
-
-### Getting Help
-
-1. **Check Logs**: Always start with `docker-compose logs video-api`
-2. **Test Health**: Verify basic functionality with `/health` endpoint
-3. **GPU Status**: Ensure GPU is accessible with `nvidia-smi`
-4. **Model Status**: Check model loading with `/model-status`
-5. **Storage**: Verify disk space and permissions
-
----
-
-## Summary
-
-This Video Generation API provides:
-- **Enterprise-ready deployment** with Docker and orchestration
-- **Comprehensive monitoring** with health checks and logging
-- **Production configuration** with environment variables
-- **Complete testing suite** for validation
-- **Detailed documentation** for operation and troubleshooting
-
-The API is designed for reliability, scalability, and ease of operation in production environments.
-
-## Quick Start
-
-### One-Command Deployment
-For a quick and easy setup, just run the deployment script. This will build the Docker image, start the service, and run tests.
-
-```bash
-./deploy.sh
-```
-
-### Manual Deployment
-If you prefer to run the steps manually:
-
-```bash
-# Build and start the Docker container in the background
-docker-compose up --build -d
-
-# Check the health of the API
-curl http://localhost:8000/health
-
-# Generate a video from a text prompt
-curl -X POST "http://localhost:8000/generate?prompt=A%20cat%20walking"
-```
-
-## System Architecture
-
-### Overview
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Web Client    │───▶│   FastAPI App    │───▶│  LTX-Video Model│
-│  (Browser/API)  │    │   (main.py)      │    │   (H100 GPU)    │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                                │
-                                ▼
-                       ┌──────────────────┐
-                       │  File Storage    │
-                       │ (videos/metadata)│
-                       └──────────────────┘
-```
-
-### Components
-- **FastAPI Application**: RESTful API server with automatic OpenAPI documentation
-- **LTX-Video Model**: HuggingFace diffusion model for text-to-video generation
-- **Storage System**: Organized file storage for videos and metadata
-- **Docker Container**: Containerized deployment with GPU support
-- **Web Interface**: Built-in gallery and preview system
 
 ## API Documentation
-
-The base URL for all endpoints is `http://localhost:8000`.
-
-### Core
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Homepage with an API overview. |
-| `/docs` | GET | Interactive API documentation (Swagger UI). |
-| `/health` | GET | Check system health and GPU status. |
-| `/model-status` | GET | Check if the video generation model is loaded. |
-
-### Video Generation
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/generate` | POST | Generate a video from a prompt. |
-
-### Video Management
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/download/{job_id}` | GET | Download a generated video. |
-| `/preview/{job_id}` | GET | Preview a video in the browser. |
-| `/status/{job_id}` | GET | Get the status and metadata for a generation job. |
-| `/gallery` | GET | Web interface showing all generated videos. |
-
-### Examples
-
-#### Generate a Video
-```bash
-curl -X POST "http://localhost:8000/generate" \
-  -d "prompt=A beautiful sunset over the ocean" \
-  -d "duration=5"
-```
-
-#### Check Generation Status
-```bash
-curl "http://localhost:8000/status/abc123def"
-```
-
-#### Download Video
-```bash
-curl -o my_video.mp4 "http://localhost:8000/download/abc123def"
-```
-
-## 🛠️ Configuration
-
-### Environment Variables
-The API supports configuration via environment variables:
-
-```bash
-# Model Settings
-MODEL_NAME=Lightricks/LTX-Video-0.9.7-distilled
-MODEL_DEVICE=auto  # auto, cuda, cpu
-MAX_VIDEO_DURATION=10
-DEFAULT_VIDEO_DURATION=3
-
-# Storage Settings
-OUTPUT_DIR=./outputs
-MAX_STORAGE_GB=100
-CLEANUP_AFTER_DAYS=7
-
-# API Settings
-API_HOST=0.0.0.0
-API_PORT=8000
-LOG_LEVEL=INFO
-
-# Security (optional)
-ENABLE_RATE_LIMIT=false
-API_KEY_REQUIRED=false
-```
-
-### Docker Environment File
-Create a `.env` file for Docker Compose:
-
-```bash
-# .env file
-CUDA_VISIBLE_DEVICES=0
-MODEL_NAME=Lightricks/LTX-Video-0.9.7-distilled
-MAX_VIDEO_DURATION=10
-LOG_LEVEL=INFO
-```
-
-## Testing
-
-### Demo Script
-Run the complete end-to-end demo:
-```bash
-python demo.py
-```
-
-### Quick Test
-Run basic functionality tests:
-```bash
-python tests/quick_test.py
-```
-
-### Comprehensive Test
-Run full end-to-end tests including video generation:
-```bash
-python tests/test_video_generation.py
-```
-
-### Manual Testing
-```bash
-# Test the API manually
-curl http://localhost:8000/health
-curl -X POST "http://localhost:8000/generate?prompt=Test%20video&duration=3"
-```
-
-## Useful Commands
-
-### Interacting with the API
-```bash
-# Get API health status
-curl http://localhost:8000/health
-
-# Load the model into memory
-curl http://localhost:8000/test-model-loading
-
-# Generate a video
-curl -X POST "http://localhost:8000/generate?prompt=A%20beautiful%20sunset&duration=5"
-
-# Check the status of your video generation job
-curl http://localhost:8000/status/{job_id}
-
-# Download your video
-curl -o video.mp4 http://localhost:8000/download/{job_id}
-```
-
-### Managing the Service
-```bash
-# View real-time logs
-docker-compose logs -f
-
-# Stop the service
-docker-compose down
-
-# Rebuild the Docker image from scratch
-docker-compose build --no-cache
-
-# Get a shell inside the running container
-docker-compose exec video-api bash
-```
-
-## Project Structure
-```
-.
-├── Dockerfile
-├── README.md
-├── configs
-│   └── settings.py
-├── deploy.sh
-├── docker-compose.yml
-├── requirements.txt
-├── requirements_h100.txt
-├── src
-│   └── main.py
-└── tests
-    ├── quick_test.py
-    └── test_video_generation.py
-```
-
-## Troubleshooting
-
-*   **CUDA Errors on Start**: This usually indicates a mismatch between the Docker runtime and the NVIDIA drivers. Try rebuilding the image with `docker-compose build --no-cache`.
-*   **Out of Memory (OOM)**: If you're running out of GPU memory, try reducing the `duration` or resolution of the generated video.
-*   **API Not Responding**: Make sure the Docker container is running (`docker-compose ps`) and that nothing else is using port 8000.
-
+For detailed API usage, see [API_DOCUMENTATION.md](./API_DOCUMENTATION.md).

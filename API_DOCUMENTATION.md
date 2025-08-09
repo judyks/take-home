@@ -130,11 +130,6 @@ curl -X POST "http://localhost:8000/generate" \
 
 **Response**: HTML page with video player and metadata.
 
-#### GET `/gallery`
-**Description**: Web interface showing all generated videos.
-
-**Response**: HTML gallery page with video previews.
-
 ## Error Handling
 
 ### HTTP Status Codes
