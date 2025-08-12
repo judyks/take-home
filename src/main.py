@@ -4,13 +4,18 @@
 import os
 import uuid
 import json
+import time
 import logging
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Dict
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import queue
 
 import imageio
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse
 from PIL import Image
 import numpy as np
@@ -23,6 +28,51 @@ MAX_RESOLUTION = 768
 MIN_FPS = 4
 MAX_FPS = 24
 MAX_BATCH_SIZE = 5
+
+# Global task queue
+task_queue = queue.Queue()
+task_results = {}
+task_states = {}
+executor = ThreadPoolExecutor(max_workers=4)
+
+def video_generator_worker():
+    """Worker thread for processing video generation tasks"""
+    global pipeline
+    
+    while True:
+        try:
+            job_id, task = task_queue.get()
+            if job_id is None:  # poison pill
+                break
+                
+            try:
+                # Ensure we have the pipeline loaded in this thread
+                if pipeline is None:
+                    load_result = asyncio.run(test_model_loading())
+                    if load_result.get("status") != "success":
+                        raise Exception(f"Failed to load model: {load_result.get('message')}")
+                        
+                task_states[job_id] = "processing"
+                result = task()
+                task_results[job_id] = {"status": "completed", "result": result}
+                task_states[job_id] = "completed"
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Task failed for job {job_id}: {error_msg}")
+                task_results[job_id] = {"status": "failed", "error": error_msg}
+                task_states[job_id] = "failed"
+            finally:
+                task_queue.task_done()
+        except Exception as e:
+            logger.error(f"Worker thread error: {e}")
+
+# Start worker threads
+worker_threads = []
+for _ in range(4):  # 4 worker threads
+    t = threading.Thread(target=video_generator_worker)
+    t.daemon = True
+    t.start()
+    worker_threads.append(t)
 
 # MockTorch for fallback if PyTorch is unavailable
 class MockTorch:
@@ -207,7 +257,7 @@ def save_video_frames(
     try:
         ensure_output_directories()
         
-        job_id = str(uuid.uuid4())[:8]
+        job_id = str(uuid.uuid4())[:8].lower()  # Ensure lowercase for consistency
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"video_{timestamp}_{job_id}.mp4"
         
@@ -272,12 +322,47 @@ def save_video_frames(
 def save_generation_metadata(job_id: str, metadata: dict) -> None:
     """Save metadata about the video generation"""
     try:
-        metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        logger.info(f"Metadata saved for job {job_id}")
+        # Ensure consistent job_id format
+        job_id = job_id.lower().strip()
+        
+        # Create metadata directory if it doesn't exist
+        metadata_dir = get_output_path("metadata")
+        os.makedirs(metadata_dir, exist_ok=True)
+        
+        # Prepare metadata path
+        metadata_path = os.path.join(metadata_dir, f"{job_id}.json")
+        logger.info(f"Saving metadata to: {metadata_path}")
+        
+        # Add additional metadata if not present
+        if "created_at" not in metadata:
+            metadata["created_at"] = datetime.now().isoformat()
+        if "job_id" not in metadata:
+            metadata["job_id"] = job_id
+            
+        # Save metadata with retries
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                with open(metadata_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                    f.flush()  # Ensure file is written to disk
+                    os.fsync(f.fileno())  # Force write to disk
+                
+                # Verify the file was written correctly
+                with open(metadata_path, 'r') as f:
+                    saved_metadata = json.load(f)
+                    if saved_metadata:
+                        logger.info(f"Metadata saved and verified for job {job_id}")
+                        return
+            except Exception as write_error:
+                if attempt == max_retries - 1:
+                    raise write_error
+                logger.warning(f"Retry {attempt + 1}/{max_retries} saving metadata: {write_error}")
+                time.sleep(0.5)  # Small delay before retry
+                
     except Exception as e:
-        logger.error(f"Failed to save metadata: {str(e)}")
+        logger.error(f"Failed to save metadata for job {job_id}: {str(e)}")
+        raise  # Re-raise to ensure we know if this fails
 
 def find_video_file(job_id: str) -> Optional[str]:
     """Find video file by job_id"""
@@ -293,11 +378,18 @@ def find_video_file(job_id: str) -> Optional[str]:
 
 # create the FastAPI application (web server to receive HTTP requests)
 app = FastAPI(
-    title="LTX-Video-0.9.7-distilled Generation API",
-    description="Converts text prompts into videos using Lightricks LTX-Video-0.9.7-distilled model",
+    title="ModelScope Text-to-Video API",
+    description="Converts text prompts into videos using damo-vilab/text-to-video-ms-1.7b model (high quality)",
     version="1.0.0"
 )
 
+
+# Server startup event
+@app.on_event("startup")
+async def startup_event():
+    """Ensure all required directories exist when server starts"""
+    ensure_output_directories()
+    logger.info("Output directories verified")
 
 # Basic Endpoints (Routes)
 
@@ -335,8 +427,8 @@ async def root():
                         continue
         
         return {
-            "message": "Welcome to the LTX-Video-0.9.7-distilled Generation API!",
-            "model": "Lightricks/LTX-Video-0.9.7-distilled",
+            "message": "Welcome to the ModelScope Text-to-Video API!",
+            "model": "damo-vilab/text-to-video-ms-1.7b (high quality)",
             "status": "Server is running",
             "docs": "Visit /docs to see all available endpoints",
             "recent_videos": recent_videos,
@@ -349,8 +441,8 @@ async def root():
         }
     except Exception as e:
         return {
-            "message": "Welcome to the LTX-Video-0.9.7-distilled Generation API!",
-            "model": "Lightricks/LTX-Video-0.9.7-distilled",
+            "message": "Welcome to the ModelScope Text-to-Video API!",
+            "model": "damo-vilab/text-to-video-ms-1.7b (high quality)",
             "status": "Server is running",
             "docs": "Visit /docs to see all available endpoints",
             "error": f"Could not load recent videos: {str(e)}"
@@ -385,13 +477,13 @@ async def health_check() -> Dict[str, Any]:
 @app.get("/test-model-loading")
 async def test_model_loading() -> Dict[str, Any]:
     """
-    Test endpoint to load the LTX-Video-0.9.7-distilled model
-    This loads the specific distilled model from Lightricks
+    Test endpoint to load the ModelScope text-to-video model (high quality)
+    This loads the damo-vilab/text-to-video-ms-1.7b model
     """
     global pipeline
     
     try:
-        logger.info("Starting LTX-Video-0.9.7-distilled model loading...")
+        logger.info("Starting ModelScope text-to-video model loading (high quality)...")
         
         # check if model is already loaded
         if pipeline is not None:
@@ -427,34 +519,47 @@ async def test_model_loading() -> Dict[str, Any]:
         logger.info("Loading LTX-Video-0.9.7-distilled model (this may take a few minutes)...")
         
         try:
-            pipeline = LTXPipeline.from_pretrained(
-                "Lightricks/LTX-Video-0.9.7-distilled",
-                torch_dtype=torch.bfloat16
+            # Try the ModelScope text-to-video model first (often better quality)
+            logger.info("Trying primary model: damo-vilab/text-to-video-ms-1.7b")
+            from diffusers import DiffusionPipeline
+            pipeline = DiffusionPipeline.from_pretrained(
+                "damo-vilab/text-to-video-ms-1.7b",
+                torch_dtype=torch.float16,
+                trust_remote_code=True
             )
-            logger.info("Successfully loaded LTX-Video-0.9.7-distilled model")
+            logger.info("Successfully loaded ModelScope text-to-video model (high quality)")
         except Exception as model_error:
-            logger.error(f"Failed to load LTX-Video-0.9.7-distilled: {model_error}")
+            logger.error(f"Failed to load damo-vilab/text-to-video-ms-1.7b: {model_error}")
             
-            # fallback to ModelScope
-            logger.info("Trying fallback model: damo-vilab/text-to-video-ms-1.7b")
+            # Try the regular LTX-Video model as backup
+            logger.info("Trying backup model: Lightricks/LTX-Video")
             try:
-                from diffusers import DiffusionPipeline
-                pipeline = DiffusionPipeline.from_pretrained(
-                    "damo-vilab/text-to-video-ms-1.7b",
-                    torch_dtype=torch.float16,
-                    trust_remote_code=True
+                from diffusers import LTXPipeline
+                pipeline = LTXPipeline.from_pretrained(
+                    "Lightricks/LTX-Video",
+                    torch_dtype=torch.bfloat16
                 )
-                logger.info("Successfully loaded ModelScope text-to-video model as fallback")
-            except Exception as fallback_error:
-                logger.error(f"Fallback model also failed: {fallback_error}")
-                return {
-                    "status": "error",
-                    "error_type": "model_loading_error",
-                    "message": f"Both primary and fallback models failed. Primary: {str(model_error)}, Fallback: {str(fallback_error)}",
-                    "primary_model": "Lightricks/LTX-Video-0.9.7-distilled",
-                    "fallback_model": "damo-vilab/text-to-video-ms-1.7b",
-                    "hint": "Check internet connection and model availability"
-                }
+                logger.info("Successfully loaded LTX-Video model as backup")
+            except Exception as ltx_error:
+                logger.error(f"LTX-Video model also failed: {ltx_error}")
+                
+                # fallback to distilled version
+                logger.info("Trying final fallback: Lightricks/LTX-Video-0.9.7-distilled")
+                try:
+                    pipeline = LTXPipeline.from_pretrained(
+                        "Lightricks/LTX-Video-0.9.7-distilled",
+                        torch_dtype=torch.bfloat16
+                    )
+                    logger.info("Successfully loaded LTX-Video-0.9.7-distilled as final fallback")
+                except Exception as fallback_error:
+                    logger.error(f"All models failed: {fallback_error}")
+                    return {
+                        "status": "error",
+                        "error_type": "model_loading_error",
+                        "message": f"All models failed. ModelScope: {str(model_error)}, LTX: {str(ltx_error)}, Distilled: {str(fallback_error)}",
+                        "attempted_models": ["damo-vilab/text-to-video-ms-1.7b", "Lightricks/LTX-Video", "Lightricks/LTX-Video-0.9.7-distilled"],
+                        "hint": "Check internet connection and model availability"
+                    }
         
         # Move to device (GPU if available, if not -> CPU)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -628,14 +733,16 @@ async def get_available_styles() -> Dict[str, Any]:
 
 @app.post("/generate")
 async def generate_video(
+    background_tasks: BackgroundTasks,
     prompt: str,
     duration: int = 3,
     seed: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     num_inference_steps: Optional[int] = None,
     fps: int = 8,
-    height: int = 512,
-    width: int = 512,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
+    resolution: Optional[int] = None,
     negative_prompt: Optional[str] = None,
     style: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -646,19 +753,19 @@ async def generate_video(
     
     # check if model is loaded, load it if not
     if pipeline is None:
-        logger.info("Model not loaded, attempting to load LTX-Video-0.9.7-distilled...")
+        logger.info("Model not loaded, attempting to load ModelScope text-to-video model...")
         try:
             load_result = await test_model_loading()
             if load_result.get("status") != "success":
                 raise HTTPException(
                     status_code=503,
-                    detail=f"Failed to load LTX-Video-0.9.7-distilled model: {load_result.get('message', 'Unknown error')}"
+                    detail=f"Failed to load ModelScope model: {load_result.get('message', 'Unknown error')}"
                 )
             logger.info("Model loaded successfully")
         except Exception as e:
             raise HTTPException(
                 status_code=503,
-                detail=f"Failed to auto-load LTX-Video-0.9.7-distilled model: {str(e)}"
+                detail=f"Failed to auto-load ModelScope model: {str(e)}"
             )
     
     try:
@@ -681,11 +788,23 @@ async def generate_video(
                 status_code=400,
                 detail=f"FPS must be between {MIN_FPS} and {MAX_FPS}"
             )
-        if height > MAX_RESOLUTION or width > MAX_RESOLUTION:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Resolution cannot exceed {MAX_RESOLUTION}x{MAX_RESOLUTION} pixels"
-            )
+        # Handle resolution parameter
+        if resolution is not None:
+            if resolution > MAX_RESOLUTION:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Resolution cannot exceed {MAX_RESOLUTION}x{MAX_RESOLUTION} pixels"
+                )
+            height = width = resolution
+        else:
+            # Use height/width if provided, otherwise default to 512
+            height = height or 512
+            width = width or 512
+            if height > MAX_RESOLUTION or width > MAX_RESOLUTION:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Resolution cannot exceed {MAX_RESOLUTION}x{MAX_RESOLUTION} pixels"
+                )
         if guidance_scale is not None and (guidance_scale < 1 or guidance_scale > 20):
             raise HTTPException(
                 status_code=400,
@@ -737,25 +856,117 @@ async def generate_video(
             logger.info(f"Parameters: guidance_scale={optimized_params['guidance_scale']}, "
                        f"steps={optimized_params['num_inference_steps']}")
             
-            # Calculate optimal frame count
-            num_frames = max(16, duration * fps)
+            # Create a unique job ID
+            job_id = str(uuid.uuid4())[:8].lower()
+            task_states[job_id] = "queued"
             
-            video_frames = pipeline(
-                prompt=enhanced_prompt,
-                negative_prompt=optimized_params['negative_prompt'],
-                num_frames=num_frames,
-                guidance_scale=optimized_params['guidance_scale'],
-                num_inference_steps=optimized_params['num_inference_steps'],
-                height=height,
-                width=width,
-                generator=torch.Generator(device=pipeline.device).manual_seed(seed)
-            ).frames[0]
+            # Define the video generation function
+            def generate_video_task():
+                try:
+                    # Calculate optimal frame count
+                    num_frames = max(16, duration * fps)
+                    
+                    video_frames = pipeline(
+                        prompt=enhanced_prompt,
+                        negative_prompt=optimized_params['negative_prompt'],
+                        num_frames=num_frames,
+                        guidance_scale=optimized_params['guidance_scale'],
+                        num_inference_steps=optimized_params['num_inference_steps'],
+                        height=height,
+                        width=width,
+                        generator=torch.Generator(device=pipeline.device).manual_seed(seed)
+                    ).frames[0]
+                    
+                    logger.info(f"Generated {len(video_frames)} frames")
+                    
+                    end_time = datetime.now()
+                    generation_time = (end_time - start_time).total_seconds()
+                    logger.info(f"Generation completed in {generation_time:.1f} seconds")
+                    
+                    return video_frames, num_frames, generation_time
+                except Exception as e:
+                    logger.error(f"Video generation failed: {str(e)}")
+                    raise e
             
-            logger.info(f"Generated {len(video_frames)} frames")
+            async def process_generation_result(task_result, metadata):
+                """Process the video generation result"""
+                try:
+                    video_frames, num_frames, generation_time = task_result
+                    video_info = save_video_frames(
+                        frames=video_frames,
+                        prompt=prompt,
+                        duration=duration,
+                        resolution=f"{height}x{width}",
+                        fps=fps
+                    )
+                    
+                    metadata.update({
+                        "frames_generated": num_frames,
+                        "generation_time_seconds": generation_time,
+                        "status": "completed",
+                        "video_info": video_info
+                    })
+                    save_generation_metadata(job_id, metadata)
+                    
+                    # Log completion
+                    logger.info(f"Video generation completed for job {job_id}")
+                except Exception as e:
+                    metadata["status"] = "failed"
+                    metadata["error"] = str(e)
+                    save_generation_metadata(job_id, metadata)
+                    logger.error(f"Video generation failed for job {job_id}: {str(e)}")
             
-            end_time = datetime.now()
-            generation_time = (end_time - start_time).total_seconds()
-            logger.info(f"Generation completed in {generation_time:.1f} seconds")
+            # Save initial metadata
+            metadata = {
+                "prompt": prompt,
+                "enhanced_prompt": enhanced_prompt,
+                "duration": duration,
+                "seed": seed,
+                "resolution": f"{height}x{width}",
+                "fps": fps,
+                "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
+                "created_at": datetime.now().isoformat(),
+                "device_used": str(pipeline.device),
+                "generation_parameters": {
+                    "guidance_scale": optimized_params['guidance_scale'],
+                    "num_inference_steps": optimized_params['num_inference_steps'],
+                    "negative_prompt": optimized_params['negative_prompt']
+                },
+                "status": "processing"
+            }
+            save_generation_metadata(job_id, metadata)
+            
+            # Add task to queue
+            task_queue.put((job_id, generate_video_task))
+            
+            # Add a background task to handle the result
+            def check_task_completion():
+                """Check task completion and process result"""
+                try:
+                    while True:
+                        if job_id in task_results:
+                            result = task_results[job_id]
+                            if result["status"] == "completed":
+                                asyncio.run(process_generation_result(result["result"], metadata))
+                            elif result["status"] == "failed":
+                                metadata["status"] = "failed"
+                                metadata["error"] = result.get("error", "Unknown error")
+                                save_generation_metadata(job_id, metadata)
+                            break
+                        time.sleep(0.1)
+                except Exception as e:
+                    logger.error(f"Error in completion check for job {job_id}: {str(e)}")
+                    metadata["status"] = "failed"
+                    metadata["error"] = str(e)
+                    save_generation_metadata(job_id, metadata)
+            
+            background_tasks.add_task(check_task_completion)
+            
+            return {
+                "status": "success",
+                "message": "Video generation task queued successfully",
+                "job_id": job_id
+            }
             
             # save generated frames as an MP4
             try:
@@ -773,7 +984,7 @@ async def generate_video(
                     "duration": duration,
                     "seed": seed,
                     "frames_generated": len(video_frames),
-                    "resolution": f"{width}x{height}",
+                    "resolution": f"{height}x{width}",  # Ensure consistent format
                     "fps": fps,
                     "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
                     "created_at": datetime.now().isoformat(),
@@ -1002,6 +1213,77 @@ async def generate_batch_videos(
 
 # Video Download & Preview Endpoints  
 
+@app.get("/metadata/{job_id}")
+async def get_video_metadata(job_id: str):
+    """
+    Get metadata for a generated video
+    
+    Parameters:
+    - job_id: Unique identifier for the video generation job
+    """
+    try:
+        # Ensure consistent job_id format
+        job_id = job_id.lower().strip()
+        metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
+        logger.info(f"Looking for metadata at: {metadata_path}")
+        
+        # List all metadata files for debugging
+        metadata_dir = get_output_path("metadata")
+        if os.path.exists(metadata_dir):
+            files = os.listdir(metadata_dir)
+            logger.info(f"Available metadata files ({len(files)}): {', '.join(files)}")
+        
+        if not os.path.exists(metadata_path):
+            logger.error(f"Metadata file not found: {metadata_path}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Metadata not found for job ID: {job_id}"
+            )
+            
+        # Try to read with retries for eventual consistency
+        max_retries = 3
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    if metadata:
+                        logger.info(f"Successfully loaded metadata for {job_id}")
+                        return metadata
+            except json.JSONDecodeError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} reading metadata: {e}")
+                    time.sleep(0.5)
+                    continue
+                logger.error(f"Invalid JSON in metadata file {metadata_path}: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Metadata file is corrupted: {str(e)}"
+                )
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(f"Retry {attempt + 1}/{max_retries} reading metadata: {e}")
+                    time.sleep(0.5)
+                    continue
+                raise
+                
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to read metadata after {max_retries} attempts: {str(last_error)}"
+        )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get metadata: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get video metadata: {str(e)}"
+        )
+
 @app.get("/download/{job_id}")
 async def download_video(job_id: str):
     """
@@ -1040,6 +1322,37 @@ async def download_video(job_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to download video: {str(e)}"
+        )
+
+@app.get("/metadata/{job_id}")
+async def get_video_metadata(job_id: str):
+    """
+    Get metadata for a generated video
+    
+    Parameters:
+    - job_id: Unique identifier for the video generation job
+    """
+    try:
+        metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
+        
+        if not os.path.exists(metadata_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Metadata not found for job ID: {job_id}"
+            )
+        
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+            
+        return metadata
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get metadata: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get video metadata: {str(e)}"
         )
 
 @app.get("/preview/{job_id}")
@@ -1195,26 +1508,78 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
     - job_id: Unique identifier for the video generation job
     """
     try:
-
+        job_id = job_id.lower()  # Ensure lowercase for consistency
         metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
+        logger.info(f"Checking job status: {job_id} at {metadata_path}")
         
-        if not os.path.exists(metadata_path):
+        # Check task state first
+        task_state = task_states.get(job_id)
+        
+        # Try to load metadata
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            logger.info(f"Successfully loaded metadata for {job_id}")
+        except FileNotFoundError:
+            logger.warning(f"Metadata file not found: {metadata_path}")
+            if task_state:
+                return {
+                    "status": task_state,
+                    "job_id": job_id,
+                    "message": "Job is being processed but metadata is not yet available"
+                }
             return {
                 "status": "not_found",
                 "job_id": job_id,
                 "message": f"No job found with ID: {job_id}"
             }
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in metadata file {metadata_path}: {e}")
+            return {
+                "status": "error",
+                "job_id": job_id,
+                "message": f"Metadata file is corrupted: {str(e)}"
+            }
         
+        # Check for task failures
+        if task_state == "failed":
+            error_info = task_results[job_id].get("error", "Unknown error")
+            return {
+                "status": "failed",
+                "job_id": job_id,
+                "error": error_info,
+                "metadata": metadata
+            }
         
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
-        
-        
+        # Check for video file
         video_path = find_video_file(job_id)
         video_ready = video_path is not None and os.path.exists(video_path)
         
+        # If task is complete and video is ready
+        if task_state == "completed" and video_ready:
+            metadata["status"] = "completed"  # Ensure metadata is updated
+            return {
+                "status": "completed",
+                "job_id": job_id,
+                "video_ready": video_ready,
+                "metadata": metadata,
+                "download_url": f"/download/{job_id}",
+                "preview_url": f"/preview/{job_id}"
+            }
+        
+        # If task is still processing or queued
+        if task_state in ["processing", "queued"]:
+            metadata["status"] = task_state  # Keep metadata in sync
+            return {
+                "status": task_state,
+                "job_id": job_id,
+                "video_ready": False,
+                "metadata": metadata
+            }
+        
+        # Default to metadata state
         return {
-            "status": "completed" if video_ready else "metadata_only",
+            "status": metadata.get("status", "metadata_only"),
             "job_id": job_id,
             "video_ready": video_ready,
             "metadata": metadata,
