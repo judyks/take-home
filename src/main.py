@@ -1367,7 +1367,6 @@ async def preview_video(job_id: str):
                     <p><strong>Frames:</strong> {metadata.get('frames_generated', 'N/A')}</p>
                     <p><strong>File Size:</strong> {file_size_mb:.1f} MB</p>
                     <p><strong>Created:</strong> {metadata.get('created_at', 'N/A')}</p>
-                    <p><strong>Model:</strong> {metadata.get('model_used', 'N/A')}</p>
                 </div>
                 
                 <div style="text-align: center;">
