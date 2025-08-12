@@ -20,8 +20,6 @@ from fastapi.responses import FileResponse, HTMLResponse
 from PIL import Image
 import numpy as np
 
-
-# Constants
 MAX_DURATION = 10
 MIN_DURATION = 1
 MAX_RESOLUTION = 768
@@ -29,7 +27,6 @@ MIN_FPS = 4
 MAX_FPS = 24
 MAX_BATCH_SIZE = 5
 
-# Global task queue
 task_queue = queue.Queue()
 task_results = {}
 task_states = {}
@@ -42,7 +39,7 @@ def video_generator_worker():
     while True:
         try:
             job_id, task = task_queue.get()
-            if job_id is None:  # poison pill
+            if job_id is None:
                 break
                 
             try:
@@ -68,7 +65,7 @@ def video_generator_worker():
 
 # Start worker threads
 worker_threads = []
-for _ in range(4):  # 4 worker threads
+for _ in range(4):
     t = threading.Thread(target=video_generator_worker)
     t.daemon = True
     t.start()
@@ -132,7 +129,7 @@ except Exception as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# global variable to store model
+# store model
 pipeline = None
 
 
@@ -148,14 +145,10 @@ def optimize_generation_parameters(
     """
     Optimize generation parameters for better prompt adherence
     """
-    # Use conservative defaults that work well for video generation
     if guidance_scale is None:
-        guidance_scale = 7.5  # Balanced setting for good prompt following without artifacts
-    
+        guidance_scale = 7.5 
     if num_inference_steps is None:
-        num_inference_steps = 25  # Good quality/speed balance
-    
-    # Simple, effective negative prompt
+        num_inference_steps = 25 
     if negative_prompt is None:
         negative_prompt = "blurry, low quality, distorted, watermark, text, static image"
     
@@ -175,7 +168,7 @@ def enhance_prompt(prompt: str) -> str:
     if len(prompt.split()) > 15 or any(word in prompt.lower() for word in ['video', 'moving', 'motion', 'animation']):
         return prompt
     
-    # Add minimal enhancement for video generation
+    # minimal enhancement for video generation
     return f"{prompt}, smooth motion"
 
 def get_style_preset(style: str) -> Dict[str, Any]:
@@ -230,17 +223,21 @@ def ensure_output_directories() -> None:
 
 def get_output_path(subdir: str) -> str:
     """Get the correct output path for a subdirectory"""
-    base_dir = os.getcwd()
-    if not base_dir.endswith("take-home"):
-        base_dir = os.path.dirname(base_dir)
-    return os.path.join(base_dir, "outputs", subdir)
+    if os.path.exists("/app/outputs"):
+        return os.path.join("/app/outputs", subdir)
+    else:
+        base_dir = os.getcwd()
+        if not base_dir.endswith("take-home"):
+            base_dir = os.path.dirname(base_dir)
+        return os.path.join(base_dir, "outputs", subdir)
 
 def save_video_frames(
     frames: List,
     prompt: str,
     duration: int,
     resolution: str,
-    fps: int = 8
+    fps: int = 8,
+    job_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Save generated frames as an MP4 video file
@@ -257,7 +254,8 @@ def save_video_frames(
     try:
         ensure_output_directories()
         
-        job_id = str(uuid.uuid4())[:8].lower()  # Ensure lowercase for consistency
+        if job_id is None:
+            job_id = str(uuid.uuid4())[:8].lower()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"video_{timestamp}_{job_id}.mp4"
         
@@ -281,18 +279,16 @@ def save_video_frames(
                 logger.warning(f"Unknown frame type: {type(frame)}")
                 processed_frames.append(np.array(frame))
         
-        # calculate FPS (frames per second) - use provided fps instead of calculating
+        # calculate FPS (frames per second)
         actual_fps = fps
         
         # save as MP4 video
-        logger.info(f"Saving video with {len(processed_frames)} frames at {actual_fps} FPS")
-        
-        # imageio to save MP4
+        logger.info(f"Saving video with {len(processed_frames)} frames at {actual_fps} FPS")     
         writer = imageio.get_writer(
             video_path, 
             fps=actual_fps, 
-            quality=8,  # Increased quality
-            codec='libx264',  # standard for compatibility
+            quality=8,  
+            codec='libx264',  
             format='FFMPEG',  # for MP4
             output_params=['-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-crf', '18']  # Higher quality encoding
         )
@@ -301,7 +297,6 @@ def save_video_frames(
             writer.append_data(frame)
         writer.close()
         
-        # Calculate file size
         file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
         
         logger.info(f"Video saved: {filename} ({file_size_mb:.1f} MB)")
@@ -322,10 +317,9 @@ def save_video_frames(
 def save_generation_metadata(job_id: str, metadata: dict) -> None:
     """Save metadata about the video generation"""
     try:
-        # Ensure consistent job_id format
         job_id = job_id.lower().strip()
         
-        # Create metadata directory if it doesn't exist
+        # Create metadata dir if it doesn't exist
         metadata_dir = get_output_path("metadata")
         os.makedirs(metadata_dir, exist_ok=True)
         
@@ -333,7 +327,6 @@ def save_generation_metadata(job_id: str, metadata: dict) -> None:
         metadata_path = os.path.join(metadata_dir, f"{job_id}.json")
         logger.info(f"Saving metadata to: {metadata_path}")
         
-        # Add additional metadata if not present
         if "created_at" not in metadata:
             metadata["created_at"] = datetime.now().isoformat()
         if "job_id" not in metadata:
@@ -345,10 +338,9 @@ def save_generation_metadata(job_id: str, metadata: dict) -> None:
             try:
                 with open(metadata_path, 'w') as f:
                     json.dump(metadata, f, indent=2)
-                    f.flush()  # Ensure file is written to disk
-                    os.fsync(f.fileno())  # Force write to disk
+                    f.flush()
+                    os.fsync(f.fileno())
                 
-                # Verify the file was written correctly
                 with open(metadata_path, 'r') as f:
                     saved_metadata = json.load(f)
                     if saved_metadata:
@@ -358,11 +350,11 @@ def save_generation_metadata(job_id: str, metadata: dict) -> None:
                 if attempt == max_retries - 1:
                     raise write_error
                 logger.warning(f"Retry {attempt + 1}/{max_retries} saving metadata: {write_error}")
-                time.sleep(0.5)  # Small delay before retry
+                time.sleep(0.5)
                 
     except Exception as e:
         logger.error(f"Failed to save metadata for job {job_id}: {str(e)}")
-        raise  # Re-raise to ensure we know if this fails
+        raise 
 
 def find_video_file(job_id: str) -> Optional[str]:
     """Find video file by job_id"""
@@ -370,7 +362,6 @@ def find_video_file(job_id: str) -> Optional[str]:
     if not os.path.exists(videos_dir):
         return None
     
-    # Look for files containing the job_id
     for filename in os.listdir(videos_dir):
         if job_id in filename and filename.endswith('.mp4'):
             return os.path.join(videos_dir, filename)
@@ -384,7 +375,6 @@ app = FastAPI(
 )
 
 
-# Server startup event
 @app.on_event("startup")
 async def startup_event():
     """Ensure all required directories exist when server starts"""
@@ -519,7 +509,7 @@ async def test_model_loading() -> Dict[str, Any]:
         logger.info("Loading LTX-Video-0.9.7-distilled model (this may take a few minutes)...")
         
         try:
-            # Try the ModelScope text-to-video model first (often better quality)
+            # Try the ModelScope text-to-video model first (better quality)
             logger.info("Trying primary model: damo-vilab/text-to-video-ms-1.7b")
             from diffusers import DiffusionPipeline
             pipeline = DiffusionPipeline.from_pretrained(
@@ -670,7 +660,7 @@ async def analyze_prompt(prompt: str) -> Dict[str, Any]:
         prompt = prompt.strip()
         word_count = len(prompt.split())
         
-        # Simple suggestions for better video generation
+        # suggestions for better video generation
         suggestions = []
         if word_count < 3:
             suggestions.append("Add more descriptive details for better results")
@@ -840,7 +830,6 @@ async def generate_video(
         logger.info("Starting video generation...")
         start_time = datetime.now()
         
-        # Generation call with optimized parameters
         try:
             # Use provided seed or generate one from prompt
             if seed is None:
@@ -848,7 +837,6 @@ async def generate_video(
                 prompt_hash = int(hashlib.md5(prompt.encode()).hexdigest()[:8], 16)
                 seed = prompt_hash % (2**31)  # Keep within valid range
             
-            # Apply minimal enhancement to prompt
             enhanced_prompt = enhance_prompt(prompt)
             
             logger.info(f"Using seed {seed} for prompt: '{prompt}'")
@@ -897,7 +885,8 @@ async def generate_video(
                         prompt=prompt,
                         duration=duration,
                         resolution=f"{height}x{width}",
-                        fps=fps
+                        fps=fps,
+                        job_id=job_id
                     )
                     
                     metadata.update({
@@ -967,92 +956,6 @@ async def generate_video(
                 "message": "Video generation task queued successfully",
                 "job_id": job_id
             }
-            
-            # save generated frames as an MP4
-            try:
-                video_info = save_video_frames(
-                    frames=video_frames,
-                    prompt=prompt,
-                    duration=duration,
-                    resolution=f"{width}x{height}",
-                    fps=fps
-                )
-                
-                metadata = {
-                    "prompt": prompt,
-                    "enhanced_prompt": enhanced_prompt,
-                    "duration": duration,
-                    "seed": seed,
-                    "frames_generated": len(video_frames),
-                    "resolution": f"{height}x{width}",  # Ensure consistent format
-                    "fps": fps,
-                    "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
-                    "created_at": datetime.now().isoformat(),
-                    "generation_time_seconds": round(generation_time, 2),
-                    "device_used": str(pipeline.device),
-                    "generation_parameters": {
-                        "guidance_scale": optimized_params['guidance_scale'],
-                        "num_inference_steps": optimized_params['num_inference_steps'],
-                        "negative_prompt": optimized_params['negative_prompt'],
-                        "num_frames": num_frames
-                    },
-                    "video_info": video_info
-                }
-                save_generation_metadata(video_info["job_id"], metadata)
-                logger.info(f"Video generation completed! Job ID: {video_info['job_id']}")
-                
-                # Print video links to terminal
-                print("\n" + "="*60)
-                print("VIDEO GENERATION COMPLETED!")
-                print("="*60)
-                print(f"Prompt: {prompt}")
-                print(f"Job ID: {video_info['job_id']}")
-                print(f"Filename: {video_info['filename']}")
-                print(f"Generation Time: {round(generation_time, 2)}s")
-                print(f"File Size: {video_info['file_size_mb']} MB")
-                print("\n ACCESS LINKS:")
-                print(f"    Download: http://localhost:8000/download/{video_info['job_id']}")
-                print(f"    Preview:  http://localhost:8000/preview/{video_info['job_id']}")
-                print(f"    Status:   http://localhost:8000/status/{video_info['job_id']}")
-                print("="*60 + "\n")
-                
-                return {
-                    "status": "success",
-                    "message": f"Video generated and saved successfully with LTX-Video-0.9.7-distilled!",
-                    "job_id": video_info["job_id"],
-                    "filename": video_info["filename"],
-                    "prompt": prompt,
-                    "enhanced_prompt": enhanced_prompt,
-                    "duration": duration,
-                    "seed": seed,
-                    "frames_generated": len(video_frames),
-                    "resolution": f"{width}x{height}",
-                    "fps": fps,
-                    "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
-                    "file_size_mb": video_info["file_size_mb"],
-                    "generation_time_seconds": round(generation_time, 2),
-                    "device_used": str(pipeline.device),
-                    "generation_parameters": {
-                        "guidance_scale": optimized_params['guidance_scale'],
-                        "num_inference_steps": optimized_params['num_inference_steps'],
-                        "negative_prompt": optimized_params['negative_prompt']
-                    },
-                    "download_url": f"/download/{video_info['job_id']}",
-                    "preview_url": f"/preview/{video_info['job_id']}"
-                }
-                
-            except Exception as save_error:
-                logger.error(f"Failed to save video: {str(save_error)}")
-                return {
-                    "status": "partial_success",
-                    "message": f"Video generated but saving failed: {str(save_error)}",
-                    "prompt": prompt,
-                    "duration": duration,
-                    "frames_generated": len(video_frames),
-                    "resolution": "512x512",
-                    "model_used": "Lightricks/LTX-Video-0.9.7-distilled",
-                    "note": "Frames generated successfully but video file could not be saved"
-                }
             
         except Exception as gen_error:
             logger.error(f"Generation failed: {str(gen_error)}")
@@ -1148,7 +1051,6 @@ async def generate_batch_videos(
             
             generation_time = (datetime.now() - start_time).total_seconds()
             
-            # Save video
             video_info = save_video_frames(
                 frames=video_frames,
                 prompt=prompt,
@@ -1157,7 +1059,6 @@ async def generate_batch_videos(
                 fps=fps
             )
             
-            # Save metadata
             metadata = {
                 "prompt": prompt,
                 "enhanced_prompt": enhanced_prompt,
@@ -1222,7 +1123,6 @@ async def get_video_metadata(job_id: str):
     - job_id: Unique identifier for the video generation job
     """
     try:
-        # Ensure consistent job_id format
         job_id = job_id.lower().strip()
         metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
         logger.info(f"Looking for metadata at: {metadata_path}")
@@ -1240,7 +1140,7 @@ async def get_video_metadata(job_id: str):
                 detail=f"Metadata not found for job ID: {job_id}"
             )
             
-        # Try to read with retries for eventual consistency
+        # Try to read with retries for consistency
         max_retries = 3
         last_error = None
         
@@ -1382,7 +1282,6 @@ async def preview_video(job_id: str):
                 status_code=404
             )
         
-        # load metadata if available
         metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
         metadata = {}
         if os.path.exists(metadata_path):
@@ -1508,14 +1407,12 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
     - job_id: Unique identifier for the video generation job
     """
     try:
-        job_id = job_id.lower()  # Ensure lowercase for consistency
+        job_id = job_id.lower() 
         metadata_path = os.path.join(get_output_path("metadata"), f"{job_id}.json")
         logger.info(f"Checking job status: {job_id} at {metadata_path}")
         
-        # Check task state first
         task_state = task_states.get(job_id)
         
-        # Try to load metadata
         try:
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
@@ -1541,7 +1438,6 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
                 "message": f"Metadata file is corrupted: {str(e)}"
             }
         
-        # Check for task failures
         if task_state == "failed":
             error_info = task_results[job_id].get("error", "Unknown error")
             return {
@@ -1551,13 +1447,11 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
                 "metadata": metadata
             }
         
-        # Check for video file
         video_path = find_video_file(job_id)
         video_ready = video_path is not None and os.path.exists(video_path)
         
-        # If task is complete and video is ready
         if task_state == "completed" and video_ready:
-            metadata["status"] = "completed"  # Ensure metadata is updated
+            metadata["status"] = "completed" 
             return {
                 "status": "completed",
                 "job_id": job_id,
@@ -1567,9 +1461,8 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
                 "preview_url": f"/preview/{job_id}"
             }
         
-        # If task is still processing or queued
         if task_state in ["processing", "queued"]:
-            metadata["status"] = task_state  # Keep metadata in sync
+            metadata["status"] = task_state  
             return {
                 "status": task_state,
                 "job_id": job_id,
